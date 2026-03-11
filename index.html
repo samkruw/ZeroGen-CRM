@@ -1,0 +1,2129 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZeroGen CRM</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK (ESM) -->
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, browserSessionPersistence, setPersistence } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+// Firebase Konfiguration
+const firebaseConfig = {
+  apiKey: "AIzaSyBEmDDTtv7rUKZ__yxMXfZt-tO8Z217wrw",
+  authDomain: "zerogen-crm.firebaseapp.com",
+  projectId: "zerogen-crm",
+  storageBucket: "zerogen-crm.firebasestorage.app",
+  messagingSenderId: "462477409182",
+  appId: "1:462477409182:web:43f9b3a07c02c89674b48f"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// Session-Persistenz
+await setPersistence(auth, browserSessionPersistence);
+
+// ====================================================
+// GLOBALER STATE
+// ====================================================
+let currentUser = null;
+let S = { 
+  ideen: [], 
+  auftraege: [], 
+  produkte: [], 
+  einnahmen: [], 
+  ausgaben: [], 
+  kunden: [], 
+  angebote: [], 
+  tasks: [], 
+  rechnungen: [], 
+  okrs: [],
+  nextId: { 
+    idee: 1, auftrag: 1, produkt: 1, ein: 1, aus: 1, 
+    kunde: 1, angebot: 1, task: 1, rechnung: 1, okr: 1 
+  } 
+};
+
+// ====================================================
+// FIRESTORE HELFER
+// ====================================================
+const userCol = (col) => collection(db, 'users', currentUser.uid, col);
+const userDocRef = (col, id) => doc(db, 'users', currentUser.uid, col, String(id));
+
+async function fsLoad() {
+  showLoading(true);
+  try {
+    for (const col of ['ideen', 'auftraege', 'produkte', 'einnahmen', 'ausgaben', 'kunden', 'angebote', 'tasks', 'rechnungen', 'okrs']) {
+      try {
+        const snap = await getDocs(userCol(col));
+        S[col] = snap.docs.map(d => ({ ...d.data(), id: parseInt(d.id) }));
+      } catch (e) {
+        console.warn(`Fehler beim Laden von ${col}:`, e);
+        S[col] = [];
+      }
+    }
+    
+    try {
+      const meta = await getDoc(doc(db, 'users', currentUser.uid, 'meta', 'counters'));
+      if (meta.exists()) S.nextId = { ...S.nextId, ...meta.data() };
+    } catch (e) {
+      console.warn('Keine Metadaten gefunden');
+    }
+    
+    if (!S.ideen.length && !S.produkte.length) await fsSeedDemo();
+  } catch (e) {
+    console.error('Fehler beim Laden:', e);
+    toast('Fehler beim Laden der Daten', 'error');
+  }
+  showLoading(false);
+}
+
+async function fsSave(col, item) {
+  if (!currentUser) return;
+  try {
+    await setDoc(userDocRef(col, item.id), item);
+    await setDoc(doc(db, 'users', currentUser.uid, 'meta', 'counters'), S.nextId);
+  } catch (e) {
+    console.error('Fehler beim Speichern:', e);
+    toast('Fehler beim Speichern', 'error');
+  }
+}
+
+async function fsDelete(col, id) {
+  if (!currentUser) return;
+  try {
+    await deleteDoc(userDocRef(col, id));
+  } catch (e) {
+    console.error('Fehler beim Löschen:', e);
+    toast('Fehler beim Löschen', 'error');
+  }
+}
+
+async function fsSeedDemo() {
+  const now = today();
+  const seed = {
+    ideen: [
+      { id: 1, name: 'HandwerkPro', desc: 'CRM für Schweizer Handwerksbetriebe.', zielgruppe: 'Handwerker CH', status: 'Live', prio: 'Hoch', potential: 'CHF 149/Mo', tags: ['SaaS', 'CRM'], notes: 'Flagship-Produkt.', createdAt: now },
+      { id: 2, name: 'PalettenTrack', desc: 'Lager- und Logistikverwaltung.', zielgruppe: 'Lager & Logistik', status: 'In Entwicklung', prio: 'Hoch', potential: 'CHF 199/Mo', tags: ['Logistik', 'SaaS'], notes: '', createdAt: now },
+      { id: 3, name: 'LandwirtPro', desc: 'Digitalisierung für Landwirte', zielgruppe: 'Landwirte', status: 'Idee', prio: 'Mittel', potential: 'CHF 99/Mo', tags: ['Landwirtschaft', 'SaaS'], notes: '', createdAt: now },
+      { id: 4, name: 'KitaPlaner', desc: 'Generiert via KI Brainstorming Master-Prompt Generator', zielgruppe: 'Kitas', status: 'In Entwicklung', prio: 'Hoch', potential: 'CHF 79/Mo', tags: ['Kita', 'Planung'], notes: '# MASTER-PROMPT: KitaPlaner\nEine umfassende Planungssoftware für Kitas...', createdAt: now }
+    ],
+    auftraege: [
+      { id: 1, titel: 'PalettenTrack MVP', kunde: 'Intern', prio: 'Hoch', status: 'In Arbeit', budget: 0, faellig: '2025-06-30', desc: 'MVP fertigstellen.' },
+      { id: 2, titel: 'Website Relaunch', kunde: 'Demo AG', prio: 'Mittel', status: 'Offen', budget: 3500, faellig: '2025-05-15', desc: 'Neue Corporate Website' }
+    ],
+    produkte: [
+      { id: 1, name: 'HandwerkPro', desc: 'Die komplette Handwerker-Software.', preis: 149, einmal: 0, status: 'Live', modell: 'SaaS / Abo' },
+      { id: 2, name: 'PalettenTrack', desc: 'Lager- und Logistikverwaltung.', preis: 199, einmal: 0, status: 'Beta', modell: 'SaaS / Abo' },
+      { id: 3, name: 'Massarbeit / Custom Dev', desc: 'Individuelle Lösungen.', preis: 0, einmal: 4900, status: 'Live', modell: 'Massarbeit' },
+    ],
+    einnahmen: [
+      { id: 1, datum: now, produktId: 1, desc: 'Monatsabo Demo AG', betrag: 149, kanal: 'Abo / Monatlich' },
+      { id: 2, datum: now, produktId: 3, desc: 'Anzahlung Custom Projekt', betrag: 1900, kanal: 'Rechnung' },
+    ],
+    ausgaben: [
+      { id: 1, datum: now, kat: 'Hosting / Server', desc: 'Vercel Pro Plan', betrag: 20, lief: 'Vercel' },
+      { id: 2, datum: now, kat: 'Software / Tools', desc: 'Claude API Kosten', betrag: 45, lief: 'Anthropic' },
+    ],
+    kunden: [
+      { id: 1, name: 'Max Mustermann', firma: 'Demo AG', email: 'max@demo.ch', tel: '+41 44 123 45 67', ort: 'Zürich', status: 'Aktiv', notizen: 'Interessiert an HandwerkPro', createdAt: now }
+    ],
+    angebote: [
+      { id: 1, nr: 'ANG-2025-001', kundeId: 1, datum: now, gueltig: '2025-04-30', total: 4900, status: 'Gesendet', createdAt: now }
+    ],
+    tasks: [
+      { id: 1, titel: 'Angebot nachfassen', prio: 'Mittel', status: 'Offen', faellig: '2025-03-20', createdAt: now },
+      { id: 2, titel: 'Meeting mit Demo AG', prio: 'Hoch', status: 'Offen', faellig: '2025-03-18', createdAt: now }
+    ],
+    rechnungen: [
+      { id: 1, nr: 'RE-2025-001', kundeId: 1, datum: now, faellig: '2025-04-15', total: 1900, status: 'Offen', createdAt: now }
+    ],
+    okrs: [
+      { id: 1, titel: 'MRR auf CHF 5000 steigern', ziel: 5000, aktuell: 3500, einheit: 'CHF', kategorie: 'Q2 2025', frist: '2025-06-30', createdAt: now }
+    ]
+  };
+  
+  S.nextId = { idee: 5, auftrag: 3, produkt: 4, ein: 3, aus: 3, kunde: 2, angebot: 2, task: 3, rechnung: 2, okr: 2 };
+  
+  for (const [col, items] of Object.entries(seed)) {
+    S[col] = items;
+    for (const item of items) {
+      await fsSave(col, item);
+    }
+  }
+}
+
+// ====================================================
+// API-KEY MANAGEMENT
+// ====================================================
+async function loadApiKeysFromFirebase() {
+  if (!currentUser) return;
+  try {
+    const apiKeyDoc = await getDoc(doc(db, 'users', currentUser.uid, 'apikeys', 'current'));
+    if (apiKeyDoc.exists()) {
+      const keys = apiKeyDoc.data();
+      if (keys.gemini) localStorage.setItem('zerogen_gemini_key', keys.gemini);
+      if (keys.groq) localStorage.setItem('zerogen_groq_key', keys.groq);
+      if (keys.provider) localStorage.setItem('zerogen_ki_provider', keys.provider);
+      updateKiStatus();
+      console.log('✅ API-Keys aus Firebase geladen');
+    }
+  } catch (e) {
+    console.warn('Keine API-Keys in Firebase gefunden');
+  }
+}
+
+async function saveApiKeysToFirebase(geminiKey, groqKey, provider) {
+  if (!currentUser) return false;
+  try {
+    const keysData = {};
+    if (geminiKey) keysData.gemini = geminiKey;
+    if (groqKey) keysData.groq = groqKey;
+    if (provider) keysData.provider = provider;
+    await setDoc(doc(db, 'users', currentUser.uid, 'apikeys', 'current'), keysData);
+    console.log('✅ API-Keys in Firebase gesichert');
+    return true;
+  } catch (e) {
+    console.error('Fehler beim Speichern der API-Keys:', e);
+    return false;
+  }
+}
+
+// ====================================================
+// KI PROVIDER FUNKTIONEN
+// ====================================================
+function getKiProvider() { return localStorage.getItem('zerogen_ki_provider') || 'gemini'; }
+function getGeminiKey() { return localStorage.getItem('zerogen_gemini_key') || ''; }
+function getGroqKey() { return localStorage.getItem('zerogen_groq_key') || ''; }
+
+function updateKiStatus() {
+  const provider = getKiProvider();
+  const hasKey = provider === 'groq' ? !!getGroqKey() : !!getGeminiKey();
+  const dot = document.getElementById('ki-status-dot');
+  const txt = document.getElementById('ki-status-text');
+  const sub = document.getElementById('ki-status-sub');
+  const providerName = provider === 'groq' ? 'Groq (Llama 3.3)' : 'Gemini 1.5 Flash';
+  
+  if (dot) dot.style.color = hasKey ? 'var(--green)' : 'var(--red)';
+  if (txt) txt.textContent = hasKey ? providerName : 'Kein API-Key';
+  if (sub) {
+    sub.style.cursor = 'pointer';
+    sub.textContent = hasKey ? provider + ' · Key gespeichert' : '→ Klick zum Einrichten';
+  }
+}
+
+// ====================================================
+// AUTH STATE
+// ====================================================
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    currentUser = user;
+    document.getElementById('auth-screen').style.display = 'none';
+    document.getElementById('app-screen').style.display = 'flex';
+    document.getElementById('user-email').textContent = user.email;
+    await loadApiKeysFromFirebase();
+    await fsLoad();
+    renderDashboard();
+    updateKiStatus();
+    renderSidebarIdeas();
+  } else {
+    currentUser = null;
+    document.getElementById('auth-screen').style.display = 'flex';
+    document.getElementById('app-screen').style.display = 'none';
+  }
+});
+
+// ====================================================
+// AUTH FUNKTIONEN
+// ====================================================
+window.doLogin = async () => {
+  const email = document.getElementById('auth-email').value.trim();
+  const pw = document.getElementById('auth-pw').value;
+  if (!email || !pw) { authMsg('Bitte Email und Passwort eingeben'); return; }
+  setAuthBusy(true);
+  try {
+    await signInWithEmailAndPassword(auth, email, pw);
+  } catch (e) {
+    setAuthBusy(false);
+    const errors = {
+      "auth/invalid-credential": "Email oder Passwort falsch.",
+      "auth/user-not-found": "Kein Account gefunden.",
+      "auth/wrong-password": "Falsches Passwort.",
+      "auth/too-many-requests": "Zu viele Versuche. Kurz warten."
+    };
+    authMsg(errors[e.code] || e.message);
+  }
+};
+
+window.doLogout = async () => {
+  try {
+    await signOut(auth);
+    S = { ideen: [], auftraege: [], produkte: [], einnahmen: [], ausgaben: [], kunden: [], angebote: [], tasks: [], rechnungen: [], okrs: [], nextId: { idee: 1, auftrag: 1, produkt: 1, ein: 1, aus: 1, kunde: 1, angebot: 1, task: 1, rechnung: 1, okr: 1 } };
+    toast('Erfolgreich abgemeldet');
+  } catch (e) {
+    console.error(e);
+    toast('Logout Fehler', 'error');
+  }
+};
+
+function authMsg(msg, ok = false) {
+  const el = document.getElementById('auth-msg');
+  el.textContent = msg;
+  el.style.display = 'block';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+  el.style.borderColor = ok ? 'rgba(74,222,128,.3)' : 'rgba(255,95,87,.2)';
+  el.style.background = ok ? 'rgba(74,222,128,.06)' : 'rgba(255,95,87,.08)';
+}
+
+function setAuthBusy(on) {
+  const btn = document.getElementById('auth-btn');
+  if (btn) {
+    btn.disabled = on;
+    btn.textContent = on ? 'Bitte warten...' : 'Anmelden';
+  }
+}
+
+function showLoading(on) {
+  document.getElementById('loading').style.display = on ? 'flex' : 'none';
+}
+
+// ====================================================
+// NAVIGATION
+// ====================================================
+window.goto = (page, el) => {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  if (el) el.classList.add('active');
+  
+  const titles = {
+    dashboard: 'Dashboard', brainstorm: 'KI Brainstorming', ideen: 'Ideen-Board',
+    auftraege: 'Aufträge', produkte: 'Produkte', einnahmen: 'Einnahmen',
+    ausgaben: 'Ausgaben', uebersicht: 'Buchhaltung', kunden: 'Kunden',
+    angebote: 'Angebote', tasks: 'Aufgaben', rechnungen: 'Rechnungen',
+    okrs: 'Ziele & OKRs', mrr: 'MRR Tracker'
+  };
+  document.getElementById('page-title').textContent = titles[page] || page;
+  
+  // Render-Funktion basierend auf Seite
+  if (page === 'dashboard') renderDashboard();
+  else if (page === 'ideen') renderIdeen();
+  else if (page === 'auftraege') renderAuftraege();
+  else if (page === 'produkte') renderProdukte();
+  else if (page === 'einnahmen') renderEinnahmen();
+  else if (page === 'ausgaben') renderAusgaben();
+  else if (page === 'uebersicht') renderUebersicht();
+  else if (page === 'kunden') renderKunden();
+  else if (page === 'mrr') renderMRR();
+  else if (page === 'angebote') renderAngebote();
+  else if (page === 'tasks') renderTasks();
+  else if (page === 'rechnungen') renderRechnungen();
+  else if (page === 'okrs') renderOKRs();
+  else if (page === 'brainstorm') renderBrainstorm();
+};
+
+// ====================================================
+// KI CHAT FUNKTIONEN
+// ====================================================
+let chatHistory = [];
+
+const SYS_PROMPT = 'Du bist ein kreativer App-Ideen Berater für ZeroGen, ein Schweizer AI-Startup aus Kloten. Hilf neue App-Ideen für den Schweizer KMU-Markt zu entwickeln. Antworte auf Deutsch, sei konkret und kreativ.';
+
+async function callGemini(messages, systemPrompt) {
+  const key = getGeminiKey();
+  if (!key) {
+    showApiKeyModal();
+    throw new Error('Bitte API-Key eingeben');
+  }
+  
+  const body = {
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+    generationConfig: { maxOutputTokens: 2048, temperature: 0.7 }
+  };
+  
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp-01-21:generateContent?key=${key}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  );
+  
+  if (!res.ok) throw new Error('API-Fehler');
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || 'Keine Antwort.';
+}
+
+async function callGroq(messages, systemPrompt) {
+  const key = getGroqKey();
+  if (!key) {
+    showApiKeyModal();
+    throw new Error('Bitte Groq API-Key eingeben');
+  }
+  
+  const body = {
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      ...messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
+    ],
+    max_tokens: 2048,
+    temperature: 0.7
+  };
+  
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${key}`
+    },
+    body: JSON.stringify(body)
+  });
+  
+  if (!res.ok) throw new Error('API-Fehler');
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || 'Keine Antwort.';
+}
+
+async function callKI(messages, systemPrompt) {
+  const provider = getKiProvider();
+  if (provider === 'groq') {
+    return await callGroq(messages, systemPrompt);
+  } else {
+    return await callGemini(messages, systemPrompt);
+  }
+}
+
+window.chat = async () => {
+  const input = document.getElementById('chat-in');
+  const msg = input.value.trim();
+  if (!msg) return;
+  
+  const hasKey = getKiProvider() === 'groq' ? !!getGroqKey() : !!getGeminiKey();
+  if (!hasKey) {
+    toast('Bitte zuerst API-Key einrichten', 'error');
+    showApiKeyModal();
+    return;
+  }
+  
+  input.value = '';
+  addMessage(msg, 'user');
+  chatHistory.push({ role: 'user', content: msg });
+  
+  const typingIndicator = addTypingIndicator();
+  
+  try {
+    const reply = await callKI(chatHistory, SYS_PROMPT);
+    typingIndicator.remove();
+    addMessage(reply, 'assistant');
+    chatHistory.push({ role: 'assistant', content: reply });
+    
+    if (reply.toLowerCase().includes('app') || reply.toLowerCase().includes('idee')) {
+      addSaveButton();
+    }
+  } catch (e) {
+    typingIndicator.remove();
+    addMessage('Fehler: ' + e.message, 'assistant');
+    console.error(e);
+  }
+};
+
+function addMessage(text, role) {
+  const container = document.getElementById('chat-msgs');
+  const msgDiv = document.createElement('div');
+  msgDiv.className = `chat-message ${role}`;
+  msgDiv.innerHTML = `
+    <div class="chat-avatar">${role === 'user' ? '👤' : '🤖'}</div>
+    <div class="chat-bubble">${text.replace(/\n/g, '<br>')}</div>
+  `;
+  container.appendChild(msgDiv);
+  container.scrollTop = container.scrollHeight;
+}
+
+function addTypingIndicator() {
+  const container = document.getElementById('chat-msgs');
+  const typingDiv = document.createElement('div');
+  typingDiv.className = 'chat-message assistant typing';
+  typingDiv.innerHTML = `
+    <div class="chat-avatar">🤖</div>
+    <div class="chat-bubble">
+      <span class="typing-dot">.</span><span class="typing-dot">.</span><span class="typing-dot">.</span>
+    </div>
+  `;
+  container.appendChild(typingDiv);
+  container.scrollTop = container.scrollHeight;
+  return typingDiv;
+}
+
+function addSaveButton() {
+  const container = document.getElementById('chat-msgs');
+  const saveDiv = document.createElement('div');
+  saveDiv.className = 'chat-save';
+  saveDiv.innerHTML = `
+    <button class="btn-ghost" onclick="saveLastAsIdea()" style="margin-top:.5rem">
+      💾 Als Idee speichern
+    </button>
+  `;
+  container.appendChild(saveDiv);
+  container.scrollTop = container.scrollHeight;
+}
+
+window.saveLastAsIdea = () => {
+  const lastAssistant = chatHistory.filter(m => m.role === 'assistant').pop();
+  if (!lastAssistant) return;
+  
+  openModal('modal-idee');
+  document.getElementById('i-notes').value = lastAssistant.content.slice(0, 2000);
+  
+  const firstLine = lastAssistant.content.split('\n')[0];
+  if (firstLine && firstLine.length < 50) {
+    document.getElementById('i-name').value = firstLine.replace(/^#?\s*/, '').slice(0, 40);
+  }
+};
+
+window.clearChat = () => {
+  document.getElementById('chat-msgs').innerHTML = '';
+  chatHistory = [];
+  addMessage('Hallo! Ich bin dein KI-Assistent. Stelle mir Fragen zu neuen App-Ideen!', 'assistant');
+};
+
+window.suggest = (topic) => {
+  document.getElementById('chat-in').value = topic;
+  chat();
+};
+
+// ====================================================
+// HELPER FUNKTIONEN
+// ====================================================
+function fmt(n) { return 'CHF ' + parseFloat(n || 0).toLocaleString('de-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmtDate(d) { return d ? new Date(d + 'T00:00:00').toLocaleDateString('de-CH') : '—'; }
+function today() { return new Date().toISOString().split('T')[0]; }
+
+function badge(s) {
+  const m = {
+    'Idee': 'draft', 'In Analyse': 'prog', 'In Entwicklung': 'prog', 'Live': 'paid',
+    'Archiviert': 'draft', 'Offen': 'new', 'In Arbeit': 'prog', 'Review': 'sent',
+    'Abgeschlossen': 'done', 'Pausiert': 'draft', 'Beta': 'sent', 'Eingestellt': 'draft',
+    'Hoch': 'overdue', 'Kritisch': 'overdue', 'Mittel': 'prog', 'Niedrig': 'draft'
+  };
+  return `<span class="badge badge-${m[s] || 'draft'}">${s}</span>`;
+}
+
+function toast(msg, type) {
+  const c = document.getElementById('toasts');
+  const t = document.createElement('div');
+  t.className = 'toast ' + (type || '');
+  t.innerHTML = (type === 'success' ? '✓ ' : type === 'error' ? '✕ ' : 'ℹ ') + msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+window.openModal = (id) => {
+  document.getElementById(id).classList.add('open');
+  if (id === 'modal-einnahme') {
+    fillSel('e-produkt');
+    document.getElementById('e-datum').value = today();
+  }
+  if (id === 'modal-ausgabe') document.getElementById('au-datum').value = today();
+  if (id === 'modal-task') {
+    const s = document.getElementById('t-auftrag');
+    s.innerHTML = '<option value="">— Kein Auftrag —</option>' + S.auftraege.map(a => `<option value="${a.id}">${a.titel}</option>`).join('');
+  }
+  if (id === 'modal-angebot') {
+    fillSel('ang-produkt');
+    document.getElementById('ang-datum').value = today();
+    document.getElementById('ang-gueltig').value = new Date(Date.now() + 30*86400000).toISOString().split('T')[0];
+  }
+  if (id === 'modal-rechnung') {
+    document.getElementById('rech-datum').value = today();
+    document.getElementById('rech-faellig').value = new Date(Date.now() + 30*86400000).toISOString().split('T')[0];
+  }
+};
+
+window.closeModal = (id) => document.getElementById(id).classList.remove('open');
+
+function fillSel(id) {
+  const s = document.getElementById(id);
+  s.innerHTML = '<option value="">— Produkt wählen —</option>';
+  S.produkte.forEach(p => s.innerHTML += `<option value="${p.id}">${p.name}</option>`);
+}
+
+// ====================================================
+// DASHBOARD
+// ====================================================
+function renderDashboard() {
+  document.getElementById('d-ideen').textContent = S.ideen.length;
+  document.getElementById('d-auf').textContent = S.auftraege.filter(a => a.status !== 'Abgeschlossen').length;
+  document.getElementById('d-ein').textContent = fmt(S.einnahmen.filter(e => e.datum && e.datum.startsWith(today().slice(0, 7))).reduce((s, e) => s + parseFloat(e.betrag || 0), 0));
+  document.getElementById('d-prod').textContent = S.produkte.filter(p => p.status === 'Live' || p.status === 'Beta').length;
+  
+  document.getElementById('d-ideen-list').innerHTML = S.ideen.slice(0, 4).map(i => `<div class="list-item"><span>${i.name}</span>${badge(i.status)}</div>`).join('');
+  document.getElementById('d-auf-table').innerHTML = S.auftraege.filter(a => a.status !== 'Abgeschlossen').slice(0, 5).map(a => `<tr><td>${a.titel}</td><td>${badge(a.status)}</td><td>${fmtDate(a.faellig)}</td></tr>`).join('');
+  
+  const prodRevHtml = S.produkte.map(p => {
+    const r = S.einnahmen.filter(e => e.produktId == p.id).reduce((s, e) => s + parseFloat(e.betrag || 0), 0);
+    return `<div class="acc-card"><div class="label">${p.name.toUpperCase()}</div><div class="value blue">${fmt(r)}</div><div class="stat-change">${p.status}</div></div>`;
+  }).join('');
+  document.getElementById('d-prod-rev').innerHTML = prodRevHtml;
+  
+  const taskHeute = S.tasks.filter(t => t.faellig === today() && t.status !== 'Erledigt');
+  const taskUebf = S.tasks.filter(t => t.faellig && t.faellig < today() && t.status !== 'Erledigt');
+  const rechnOffen = S.rechnungen.filter(r => r.status === 'Offen' || r.status === 'Gesendet');
+  const rechnUebf = S.rechnungen.filter(r => r.faellig && r.faellig < today() && r.status !== 'Bezahlt' && r.status !== 'Storniert');
+  const angAngen = S.angebote.filter(a => a.status === 'Angenommen');
+  const okrActive = S.okrs.filter(o => !o.frist || o.frist >= today());
+  
+  const alerts = [];
+  if (taskUebf.length) alerts.push(`<div class="alert-item red">⚠ ${taskUebf.length} überfällige Aufgabe${taskUebf.length > 1 ? 'n' : ''}</div>`);
+  if (taskHeute.length) alerts.push(`<div class="alert-item yellow">🔔 ${taskHeute.length} Aufgabe${taskHeute.length > 1 ? 'n' : ''} heute fällig</div>`);
+  if (rechnUebf.length) alerts.push(`<div class="alert-item red">🧾 ${rechnUebf.length} überfällige Rechnung${rechnUebf.length > 1 ? 'en' : ''}</div>`);
+  if (rechnOffen.length) alerts.push(`<div class="alert-item yellow">💰 ${fmt(rechnOffen.reduce((s, r) => s + parseFloat(r.total || 0), 0))} offen</div>`);
+  if (angAngen.length) alerts.push(`<div class="alert-item green">✓ ${angAngen.length} Angebot${angAngen.length > 1 ? 'e' : ''} angenommen</div>`);
+  if (okrActive.length) {
+    const done = okrActive.filter(o => parseFloat(o.aktuell || 0) >= parseFloat(o.ziel || 1)).length;
+    alerts.push(`<div class="alert-item blue">🎯 ${done}/${okrActive.length} Ziele erreicht</div>`);
+  }
+  document.getElementById('d-alerts').innerHTML = alerts.length ? alerts.join('') : '<div class="alert-item green">✓ Alles im grünen Bereich!</div>';
+}
+
+// ====================================================
+// IDEEN FUNKTIONEN
+// ====================================================
+function renderIdeen() {
+  const f = document.getElementById('ideen-filter')?.value || '';
+  const l = S.ideen.filter(i => !f || i.status === f);
+  const g = document.getElementById('ideen-grid');
+  
+  if (!l.length) {
+    g.innerHTML = '<div class="empty-state"><div class="icon">💡</div><p>Noch keine Ideen. Starte das KI Brainstorming!</p><button class="btn" onclick="goto(\'brainstorm\')">🧠 Zum Brainstorming</button></div>';
+    return;
+  }
+  
+  g.innerHTML = l.map(i => `<div class="idea-card">
+    <div class="idea-header">
+      <h4>${i.name}</h4>
+      <div class="idea-actions">
+        ${badge(i.status)}
+        <button class="btn-icon" onclick="editIdee(${i.id})" title="Bearbeiten">✏️</button>
+        <button class="btn-icon" onclick="delIdee(${i.id})" title="Löschen">🗑</button>
+      </div>
+    </div>
+    <p class="idea-desc">${i.desc || ''}</p>
+    ${i.zielgruppe ? `<div class="idea-meta">👥 ${i.zielgruppe}</div>` : ''}
+    ${i.potential ? `<div class="idea-meta potential">💰 ${i.potential}</div>` : ''}
+    <div class="idea-tags">${(i.tags || []).map(t => `<span class="idea-tag">${t}</span>`).join('')}</div>
+    ${i.notes && i.notes.startsWith('# MASTER-PROMPT:') ? 
+      `<button class="master-prompt-btn" onclick="viewMasterPrompt(${i.id})">📋 Master-Prompt ansehen</button>` : ''}
+    ${renderScore(i)}
+  </div>`).join('');
+}
+
+window.editIdee = (id) => {
+  const idee = S.ideen.find(i => i.id === id);
+  if (!idee) return;
+  document.getElementById('editing-idee-id').value = idee.id;
+  document.getElementById('i-name').value = idee.name || '';
+  document.getElementById('i-desc').value = idee.desc || '';
+  document.getElementById('i-zielgruppe').value = idee.zielgruppe || '';
+  document.getElementById('i-status').value = idee.status || 'Idee';
+  document.getElementById('i-prio').value = idee.prio || 'Mittel';
+  document.getElementById('i-potential').value = idee.potential || '';
+  document.getElementById('i-tags').value = (idee.tags || []).join(', ');
+  document.getElementById('i-notes').value = idee.notes || '';
+  document.getElementById('modal-idee-title').textContent = '✏️ Idee bearbeiten';
+  openModal('modal-idee');
+};
+
+window.saveIdee = async () => {
+  const name = document.getElementById('i-name').value.trim();
+  if (!name) { toast('App-Namen eingeben', 'error'); return; }
+  
+  const editingId = document.getElementById('editing-idee-id').value;
+  const item = {
+    id: editingId ? parseInt(editingId) : S.nextId.idee++,
+    name,
+    desc: document.getElementById('i-desc').value,
+    zielgruppe: document.getElementById('i-zielgruppe').value,
+    status: document.getElementById('i-status').value,
+    prio: document.getElementById('i-prio').value,
+    potential: document.getElementById('i-potential').value,
+    tags: document.getElementById('i-tags').value.split(',').map(t => t.trim()).filter(Boolean),
+    notes: document.getElementById('i-notes').value,
+  };
+  
+  if (editingId) {
+    const index = S.ideen.findIndex(i => i.id === parseInt(editingId));
+    if (index !== -1) {
+      item.createdAt = S.ideen[index].createdAt;
+      item.score = S.ideen[index].score;
+      S.ideen[index] = item;
+    }
+  } else {
+    item.createdAt = today();
+    S.ideen.push(item);
+  }
+  
+  await fsSave('ideen', item);
+  closeModal('modal-idee');
+  document.getElementById('editing-idee-id').value = '';
+  document.getElementById('modal-idee-title').textContent = '💡 Neue App-Idee';
+  ['i-name', 'i-desc', 'i-zielgruppe', 'i-potential', 'i-tags', 'i-notes'].forEach(id => document.getElementById(id).value = '');
+  renderIdeen();
+  renderSidebarIdeas();
+  toast(editingId ? 'Idee aktualisiert!' : 'Idee gespeichert!', 'success');
+};
+
+window.delIdee = async (id) => {
+  if (confirm('Idee wirklich löschen?')) {
+    S.ideen = S.ideen.filter(i => i.id !== id);
+    await fsDelete('ideen', id);
+    renderIdeen();
+    renderSidebarIdeas();
+    toast('Idee gelöscht');
+  }
+};
+
+window.viewMasterPrompt = (id) => {
+  const idee = S.ideen.find(i => i.id === id);
+  if (!idee || !idee.notes) return;
+  document.getElementById('prompt-output').value = idee.notes;
+  document.getElementById('prompt-charcount').textContent = idee.notes.length + ' Zeichen';
+  document.getElementById('modal-prompt').classList.add('open');
+};
+
+function renderScore(idee) {
+  if (!idee.score) return `<button class="ai-suggest-btn" onclick="scoreIdee(${idee.id})" style="margin-top:.75rem">⭐ KI-Score</button>`;
+  const s = idee.score;
+  const bar = (v) => `<div style="height:4px;background:var(--dark);border-radius:2px;margin-top:.2rem"><div style="height:4px;border-radius:2px;background:var(--grad);width:${v * 10}%"></div></div>`;
+  const col = s.gesamt >= 7 ? 'var(--green)' : s.gesamt >= 5 ? '#FCD34D' : 'var(--red)';
+  return `<div class="score-card">
+    <div class="score-header"><span>KI-SCORE</span><span style="color:${col}">${s.gesamt}/10</span></div>
+    <div class="score-grid">
+      <div>Markt CH ${bar(s.markt)}</div><div>Entwicklung ${bar(s.aufwand)}</div>
+      <div>Fit ${bar(s.fit)}</div><div>Monetarisierung ${bar(s.monetarisierung)}</div>
+      <div style="grid-column:1/-1">Wettbewerb ${bar(s.wettbewerb)}</div>
+    </div>
+    ${s.empfehlung ? `<div class="score-empfehlung">💡 ${s.empfehlung}</div>` : ''}
+  </div>`;
+}
+
+function renderSidebarIdeas() {
+  const sb = document.getElementById('ideas-sb');
+  if (!sb) return;
+  if (!S.ideen.length) {
+    sb.innerHTML = '<div style="padding:1.25rem;text-align:center;color:var(--muted);font-size:.8rem">Noch keine Ideen</div>';
+    return;
+  }
+  sb.innerHTML = S.ideen.map(i => `<div class="list-item"><span>${i.name}</span>${badge(i.status)}</div>`).join('');
+}
+
+// ====================================================
+// AUFTRÄGE FUNKTIONEN
+// ====================================================
+function renderAuftraege() {
+  const tb = document.getElementById('auf-tbody');
+  if (!S.auftraege.length) {
+    tb.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem">Keine Aufträge</td></tr>';
+    return;
+  }
+  tb.innerHTML = S.auftraege.map(a => `<tr>
+    <td>${a.titel}</td>
+    <td>${a.kunde}</td>
+    <td>${badge(a.prio)}</td>
+    <td>${badge(a.status)}</td>
+    <td>${a.budget ? fmt(a.budget) : '—'}</td>
+    <td>${fmtDate(a.faellig)}</td>
+    <td><button class="btn-icon" onclick="delAuf(${a.id})">🗑</button></td>
+  </tr>`).join('');
+}
+
+window.saveAuf = async () => {
+  const titel = document.getElementById('a-titel').value.trim();
+  if (!titel) { toast('Titel eingeben', 'error'); return; }
+  
+  const item = {
+    id: S.nextId.auftrag++,
+    titel,
+    kunde: document.getElementById('a-kunde').value || 'Intern',
+    prio: document.getElementById('a-prio').value,
+    status: document.getElementById('a-status').value,
+    budget: parseFloat(document.getElementById('a-budget').value) || 0,
+    faellig: document.getElementById('a-faellig').value,
+    desc: document.getElementById('a-desc').value,
+    createdAt: today()
+  };
+  
+  S.auftraege.push(item);
+  await fsSave('auftraege', item);
+  closeModal('modal-auftrag');
+  ['a-titel', 'a-kunde', 'a-budget', 'a-faellig', 'a-desc'].forEach(id => document.getElementById(id).value = '');
+  renderAuftraege();
+  toast('Auftrag gespeichert!', 'success');
+};
+
+window.delAuf = async (id) => {
+  if (confirm('Auftrag wirklich löschen?')) {
+    S.auftraege = S.auftraege.filter(a => a.id !== id);
+    await fsDelete('auftraege', id);
+    renderAuftraege();
+    toast('Auftrag gelöscht');
+  }
+};
+
+// ====================================================
+// PRODUKTE FUNKTIONEN
+// ====================================================
+function renderProdukte() {
+  const grid = document.getElementById('prod-grid');
+  if (!S.produkte.length) {
+    grid.innerHTML = '<div class="empty-state">Keine Produkte</div>';
+    return;
+  }
+  grid.innerHTML = S.produkte.map(p => `<div class="product-card">
+    <div class="product-header">
+      <h3>${p.name}</h3>
+      ${badge(p.status)}
+    </div>
+    <p class="product-desc">${p.desc}</p>
+    <div class="product-price">
+      <div class="price-label">PREIS</div>
+      <div class="price-value">${p.preis ? fmt(p.preis) + '/Mo' : fmt(p.einmal)}</div>
+    </div>
+    <button class="btn-icon" onclick="delProd(${p.id})" style="margin-top:.5rem">🗑 Löschen</button>
+  </div>`).join('');
+}
+
+window.saveProd = async () => {
+  const name = document.getElementById('p-name').value.trim();
+  if (!name) { toast('Produktnamen eingeben', 'error'); return; }
+  
+  const item = {
+    id: S.nextId.produkt++,
+    name,
+    desc: document.getElementById('p-desc').value,
+    preis: parseFloat(document.getElementById('p-preis').value) || 0,
+    einmal: parseFloat(document.getElementById('p-einmal').value) || 0,
+    status: document.getElementById('p-status').value,
+    modell: document.getElementById('p-modell').value,
+    createdAt: today()
+  };
+  
+  S.produkte.push(item);
+  await fsSave('produkte', item);
+  closeModal('modal-produkt');
+  ['p-name', 'p-desc', 'p-preis', 'p-einmal'].forEach(id => document.getElementById(id).value = '');
+  renderProdukte();
+  toast('Produkt gespeichert!', 'success');
+};
+
+window.delProd = async (id) => {
+  if (confirm('Produkt wirklich löschen?')) {
+    S.produkte = S.produkte.filter(p => p.id !== id);
+    await fsDelete('produkte', id);
+    renderProdukte();
+    toast('Produkt gelöscht');
+  }
+};
+
+// ====================================================
+// EINNAHMEN FUNKTIONEN
+// ====================================================
+function renderEinnahmen() {
+  const fp = document.getElementById('ein-filter');
+  fp.innerHTML = '<option value="">Alle Produkte</option>' + S.produkte.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  
+  const fv = fp.value;
+  const l = S.einnahmen.filter(e => !fv || e.produktId == fv).sort((a,b) => b.datum.localeCompare(a.datum));
+  document.getElementById('ein-total').textContent = fmt(l.reduce((s,e) => s + parseFloat(e.betrag||0), 0));
+  
+  const tb = document.getElementById('ein-tbody');
+  if (!l.length) {
+    tb.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:2rem">Keine Einnahmen</td></tr>';
+    return;
+  }
+  tb.innerHTML = l.map(e => `<tr>
+    <td>${fmtDate(e.datum)}</td>
+    <td>${e.produktId ? (S.produkte.find(p => p.id == e.produktId)?.name || '—') : '—'}</td>
+    <td>${e.desc}</td>
+    <td style="color:var(--green)">${fmt(e.betrag)}</td>
+    <td>${e.kanal}</td>
+    <td><button class="btn-icon" onclick="delEin(${e.id})">🗑</button></td>
+  </tr>`).join('');
+}
+
+window.saveEin = async () => {
+  const b = parseFloat(document.getElementById('e-betrag').value);
+  if (!b) { toast('Betrag eingeben', 'error'); return; }
+  
+  const item = {
+    id: S.nextId.ein++,
+    datum: document.getElementById('e-datum').value || today(),
+    produktId: parseInt(document.getElementById('e-produkt').value) || null,
+    desc: document.getElementById('e-desc').value,
+    betrag: b,
+    kanal: document.getElementById('e-kanal').value,
+    createdAt: today()
+  };
+  
+  S.einnahmen.push(item);
+  await fsSave('einnahmen', item);
+  closeModal('modal-einnahme');
+  ['e-betrag', 'e-desc'].forEach(id => document.getElementById(id).value = '');
+  renderEinnahmen();
+  toast('Einnahme gespeichert!', 'success');
+};
+
+window.delEin = async (id) => {
+  if (confirm('Einnahme wirklich löschen?')) {
+    S.einnahmen = S.einnahmen.filter(e => e.id !== id);
+    await fsDelete('einnahmen', id);
+    renderEinnahmen();
+    toast('Einnahme gelöscht');
+  }
+};
+
+// ====================================================
+// AUSGABEN FUNKTIONEN
+// ====================================================
+function renderAusgaben() {
+  const l = S.ausgaben.sort((a,b) => b.datum.localeCompare(a.datum));
+  document.getElementById('aus-total').textContent = fmt(l.reduce((s,a) => s + parseFloat(a.betrag||0), 0));
+  
+  const tb = document.getElementById('aus-tbody');
+  if (!l.length) {
+    tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:2rem">Keine Ausgaben</td></tr>';
+    return;
+  }
+  tb.innerHTML = l.map(a => `<tr>
+    <td>${fmtDate(a.datum)}</td>
+    <td>${a.kat}</td>
+    <td>${a.desc}${a.lief ? `<br><small>${a.lief}</small>` : ''}</td>
+    <td style="color:var(--red)">${fmt(a.betrag)}</td>
+    <td><button class="btn-icon" onclick="delAus(${a.id})">🗑</button></td>
+  </tr>`).join('');
+}
+
+window.saveAus = async () => {
+  const b = parseFloat(document.getElementById('au-betrag').value);
+  if (!b) { toast('Betrag eingeben', 'error'); return; }
+  
+  const item = {
+    id: S.nextId.aus++,
+    datum: document.getElementById('au-datum').value || today(),
+    kat: document.getElementById('au-kat').value,
+    desc: document.getElementById('au-desc').value,
+    betrag: b,
+    lief: document.getElementById('au-lief').value,
+    createdAt: today()
+  };
+  
+  S.ausgaben.push(item);
+  await fsSave('ausgaben', item);
+  closeModal('modal-ausgabe');
+  ['au-betrag', 'au-desc', 'au-lief'].forEach(id => document.getElementById(id).value = '');
+  renderAusgaben();
+  toast('Ausgabe gespeichert!', 'success');
+};
+
+window.delAus = async (id) => {
+  if (confirm('Ausgabe wirklich löschen?')) {
+    S.ausgaben = S.ausgaben.filter(a => a.id !== id);
+    await fsDelete('ausgaben', id);
+    renderAusgaben();
+    toast('Ausgabe gelöscht');
+  }
+};
+
+// ====================================================
+// ÜBERSICHT FUNKTIONEN
+// ====================================================
+function renderUebersicht() {
+  renderAccMonat();
+}
+
+function renderAccMonat() {
+  const mo = {};
+  S.einnahmen.forEach(e => { const m = e.datum.slice(0,7); if (!mo[m]) mo[m] = {e:0,a:0}; mo[m].e += parseFloat(e.betrag||0); });
+  S.ausgaben.forEach(a => { const m = a.datum.slice(0,7); if (!mo[m]) mo[m] = {e:0,a:0}; mo[m].a += parseFloat(a.betrag||0); });
+  
+  const tE = S.einnahmen.reduce((s,e) => s + parseFloat(e.betrag||0), 0);
+  const tA = S.ausgaben.reduce((s,a) => s + parseFloat(a.betrag||0), 0);
+  
+  let html = '<div class="accounting-summary">';
+  html += `<div class="acc-card"><div class="label">EINNAHMEN</div><div class="value green">${fmt(tE)}</div></div>`;
+  html += `<div class="acc-card"><div class="label">AUSGABEN</div><div class="value red">${fmt(tA)}</div></div>`;
+  html += `<div class="acc-card"><div class="label">GEWINN</div><div class="value ${tE-tA >=0 ? 'green' : 'red'}">${fmt(tE-tA)}</div></div>`;
+  html += '</div>';
+  
+  html += '<div class="card"><div class="card-header"><h3>Monatsübersicht</h3></div><div class="table-wrap"><table><thead><tr><th>MONAT</th><th>EINNAHMEN</th><th>AUSGABEN</th><th>ERGEBNIS</th></tr></thead><tbody>';
+  
+  Object.keys(mo).sort().forEach(m => {
+    const d = mo[m];
+    const erg = d.e - d.a;
+    html += `<tr><td>${m}</td><td style="color:var(--green)">${fmt(d.e)}</td><td style="color:var(--red)">${fmt(d.a)}</td><td style="color:${erg>=0?'var(--green)':'var(--red)'}">${fmt(erg)}</td></tr>`;
+  });
+  
+  if (!Object.keys(mo).length) html += '<tr><td colspan="4" style="text-align:center;padding:2rem">Keine Daten</td></tr>';
+  html += '</tbody></table></div></div>';
+  
+  document.getElementById('acc-monat-content').innerHTML = html;
+}
+
+// ====================================================
+// KUNDEN FUNKTIONEN
+// ====================================================
+function renderKunden() {
+  const grid = document.getElementById('kunden-grid');
+  if (!S.kunden.length) {
+    grid.innerHTML = '<div class="empty-state"><div class="icon">👥</div><p>Keine Kunden</p><button class="btn" onclick="openModal(\'modal-kunde\')">+ Ersten Kunden hinzufügen</button></div>';
+    return;
+  }
+  grid.innerHTML = S.kunden.map(k => `<div class="customer-card">
+    <div class="customer-header">
+      <div class="customer-avatar">${k.name[0].toUpperCase()}</div>
+      <div><strong>${k.name}</strong><br><small>${k.firma || ''}</small></div>
+      ${badge(k.status)}
+    </div>
+    ${k.email ? `<div style="margin-top:.5rem">📧 ${k.email}</div>` : ''}
+    ${k.tel ? `<div>📞 ${k.tel}</div>` : ''}
+    ${k.ort ? `<div>📍 ${k.ort}</div>` : ''}
+    <div style="margin-top:.75rem;display:flex;gap:.5rem">
+      <button class="btn-ghost" onclick="openAngebot(${k.id})" style="flex:1">📄 Angebot</button>
+      <button class="btn-icon" onclick="delKunde(${k.id})">🗑</button>
+    </div>
+  </div>`).join('');
+}
+
+window.saveKunde = async () => {
+  const name = document.getElementById('k-name').value.trim();
+  if (!name) { toast('Name eingeben', 'error'); return; }
+  
+  const item = {
+    id: S.nextId.kunde++,
+    name,
+    firma: document.getElementById('k-firma').value,
+    email: document.getElementById('k-email').value,
+    tel: document.getElementById('k-tel').value,
+    ort: document.getElementById('k-ort').value,
+    status: document.getElementById('k-status').value,
+    notizen: document.getElementById('k-notizen').value,
+    createdAt: today()
+  };
+  
+  S.kunden.push(item);
+  await fsSave('kunden', item);
+  closeModal('modal-kunde');
+  ['k-name', 'k-firma', 'k-email', 'k-tel', 'k-ort', 'k-notizen'].forEach(id => document.getElementById(id).value = '');
+  renderKunden();
+  toast('Kunde gespeichert!', 'success');
+};
+
+window.delKunde = async (id) => {
+  if (confirm('Kunden wirklich löschen?')) {
+    S.kunden = S.kunden.filter(k => k.id !== id);
+    await fsDelete('kunden', id);
+    renderKunden();
+    toast('Kunde gelöscht');
+  }
+};
+
+window.openAngebot = (kundeId) => {
+  const kunde = S.kunden.find(k => k.id === kundeId);
+  if (!kunde) return;
+  
+  document.getElementById('ang-kunde-id').value = kundeId;
+  document.getElementById('ang-kunde-name').textContent = kunde.name + (kunde.firma ? ' — ' + kunde.firma : '');
+  document.getElementById('ang-nr').value = 'ANG-' + new Date().getFullYear() + '-' + String(S.angebote.length + 1).padStart(3, '0');
+  openModal('modal-angebot');
+};
+
+// ====================================================
+// ANGEBOTE FUNKTIONEN
+// ====================================================
+function renderAngebote() {
+  const container = document.getElementById('angebote-content');
+  if (!S.angebote.length) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">📄</div><p>Keine Angebote</p></div>';
+    return;
+  }
+  
+  let html = '<div class="table-wrap"><table><thead><tr><th>NR.</th><th>KUNDE</th><th>DATUM</th><th>GÜLTIG</th><th>BETRAG</th><th>STATUS</th></tr></thead><tbody>';
+  
+  S.angebote.forEach(a => {
+    const kunde = S.kunden.find(k => k.id === a.kundeId);
+    html += `<tr>
+      <td>${a.nr}</td>
+      <td>${kunde?.name || a.kundenName || '—'}</td>
+      <td>${fmtDate(a.datum)}</td>
+      <td>${fmtDate(a.gueltig)}</td>
+      <td>${fmt(a.total || 0)}</td>
+      <td>${badge(a.status)}</td>
+    </tr>`;
+  });
+  
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
+}
+
+// ====================================================
+// TASKS FUNKTIONEN
+// ====================================================
+function renderTasks() {
+  const container = document.getElementById('tasks-content');
+  if (!S.tasks.length) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">✅</div><p>Keine Aufgaben</p></div>';
+    return;
+  }
+  
+  let html = '<div class="table-wrap"><table><thead><tr><th></th><th>TITEL</th><th>PRIO</th><th>FÄLLIG</th><th>STATUS</th></tr></thead><tbody>';
+  
+  S.tasks.forEach(t => {
+    html += `<tr>
+      <td><input type="checkbox" ${t.status === 'Erledigt' ? 'checked' : ''} onchange="toggleTask(${t.id})"></td>
+      <td>${t.titel}</td>
+      <td>${badge(t.prio)}</td>
+      <td>${fmtDate(t.faellig)}</td>
+      <td>${badge(t.status)}</td>
+    </tr>`;
+  });
+  
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
+}
+
+window.toggleTask = async (id) => {
+  const task = S.tasks.find(t => t.id === id);
+  if (!task) return;
+  task.status = task.status === 'Erledigt' ? 'Offen' : 'Erledigt';
+  await fsSave('tasks', task);
+  renderTasks();
+  toast(task.status === 'Erledigt' ? 'Aufgabe erledigt!' : 'Aufgabe wieder geöffnet', 'success');
+};
+
+// ====================================================
+// RECHNUNGEN FUNKTIONEN
+// ====================================================
+function renderRechnungen() {
+  const container = document.getElementById('rechnungen-content');
+  if (!S.rechnungen.length) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">🧾</div><p>Keine Rechnungen</p></div>';
+    return;
+  }
+  
+  let html = '<div class="table-wrap"><table><thead><tr><th>NR.</th><th>KUNDE</th><th>DATUM</th><th>FÄLLIG</th><th>BETRAG</th><th>STATUS</th></tr></thead><tbody>';
+  
+  S.rechnungen.forEach(r => {
+    const kunde = S.kunden.find(k => k.id === r.kundeId);
+    html += `<tr>
+      <td>${r.nr}</td>
+      <td>${kunde?.name || r.kundenName || '—'}</td>
+      <td>${fmtDate(r.datum)}</td>
+      <td>${fmtDate(r.faellig)}</td>
+      <td>${fmt(r.total || 0)}</td>
+      <td>${badge(r.status)}</td>
+    </tr>`;
+  });
+  
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
+}
+
+// ====================================================
+// OKRS FUNKTIONEN
+// ====================================================
+function renderOKRs() {
+  const container = document.getElementById('okrs-content');
+  if (!S.okrs.length) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">🎯</div><p>Keine Ziele</p></div>';
+    return;
+  }
+  
+  let html = '<div class="okr-grid">';
+  
+  S.okrs.forEach(o => {
+    const progress = Math.min(100, Math.round((parseFloat(o.aktuell || 0) / parseFloat(o.ziel || 1)) * 100));
+    html += `<div class="okr-card">
+      <h4>${o.titel}</h4>
+      <div class="okr-progress">
+        <div class="progress-bar" style="width:${progress}%"></div>
+      </div>
+      <div>${o.aktuell || 0} / ${o.ziel} ${o.einheit}</div>
+      <small>${o.kategorie || ''}</small>
+    </div>`;
+  });
+  
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ====================================================
+// MRR FUNKTIONEN
+// ====================================================
+function renderMRR() {
+  const monatlich = {};
+  S.einnahmen.forEach(e => { const m = e.datum.slice(0,7); if (m) monatlich[m] = (monatlich[m] || 0) + parseFloat(e.betrag||0); });
+  
+  const mrrAbo = S.produkte.filter(p => p.status === 'Live' || p.status === 'Beta').reduce((s,p) => s + parseFloat(p.preis||0), 0);
+  const thisMonth = today().slice(0,7);
+  const thisMonthRev = monatlich[thisMonth] || 0;
+  
+  let html = '<div class="stats-grid" style="grid-template-columns:repeat(2,1fr)">';
+  html += `<div class="stat-card"><div class="stat-label">MRR POTENTIAL</div><div class="stat-val">${fmt(mrrAbo)}</div></div>`;
+  html += `<div class="stat-card"><div class="stat-label">DIESER MONAT</div><div class="stat-val">${fmt(thisMonthRev)}</div></div>`;
+  html += '</div>';
+  
+  document.getElementById('mrr-content').innerHTML = html;
+}
+
+// ====================================================
+// BRAINSTORM RENDER
+// ====================================================
+function renderBrainstorm() {
+  // Initiale Begrüßung nur einmal anzeigen
+  const chatMsgs = document.getElementById('chat-msgs');
+  if (chatMsgs.children.length === 0) {
+    addMessage('Hallo! Ich bin dein KI-Assistent. Stelle mir Fragen zu neuen App-Ideen!', 'assistant');
+  }
+}
+
+// ====================================================
+// API KEY MODAL FUNKTIONEN
+// ====================================================
+window.showApiKeyModal = () => {
+  document.getElementById('ki-provider-select').value = getKiProvider();
+  document.getElementById('apikey-input').value = getKiProvider() === 'groq' ? getGroqKey() : getGeminiKey();
+  updateProviderLabel();
+  document.getElementById('modal-apikey').classList.add('open');
+};
+
+window.updateProviderLabel = () => {
+  const provider = document.getElementById('ki-provider-select').value;
+  const label = document.getElementById('apikey-label');
+  const hint = document.getElementById('apikey-hint');
+  
+  if (provider === 'groq') {
+    label.textContent = 'GROQ API KEY';
+    hint.innerHTML = '<strong style="color:var(--cyan)">Kostenloser Key:</strong><br>console.groq.com → API Keys';
+  } else {
+    label.textContent = 'GEMINI API KEY';
+    hint.innerHTML = '<strong style="color:var(--cyan)">Kostenloser Key:</strong><br>aistudio.google.com → Get API key';
+  }
+};
+
+window.saveApiKey = async () => {
+  const provider = document.getElementById('ki-provider-select').value;
+  const key = document.getElementById('apikey-input').value.trim();
+  
+  if (provider === 'groq') {
+    if (!key) { toast('Bitte Groq API-Key eingeben', 'error'); return; }
+    localStorage.setItem('zerogen_groq_key', key);
+  } else {
+    if (!key.startsWith('AIza')) { toast('Ungültiger Key — muss mit AIza... beginnen', 'error'); return; }
+    localStorage.setItem('zerogen_gemini_key', key);
+  }
+  
+  localStorage.setItem('zerogen_ki_provider', provider);
+  
+  const geminiKey = provider === 'gemini' ? key : localStorage.getItem('zerogen_gemini_key');
+  const groqKey = provider === 'groq' ? key : localStorage.getItem('zerogen_groq_key');
+  
+  const saved = await saveApiKeysToFirebase(geminiKey, groqKey, provider);
+  toast(saved ? '✓ API-Key in Firebase gesichert!' : '✓ Lokal gespeichert', 'success');
+  updateKiStatus();
+  setTimeout(() => closeModal('modal-apikey'), 500);
+};
+
+window.syncApiKeys = async () => {
+  if (!currentUser) { toast('Bitte einloggen', 'error'); return; }
+  const geminiKey = localStorage.getItem('zerogen_gemini_key');
+  const groqKey = localStorage.getItem('zerogen_groq_key');
+  const provider = localStorage.getItem('zerogen_ki_provider') || 'gemini';
+  if (!geminiKey && !groqKey) { toast('Keine Keys zum Syncen', 'error'); return; }
+  await saveApiKeysToFirebase(geminiKey, groqKey, provider);
+  toast('API-Keys synchronisiert!', 'success');
+};
+
+window.copyPrompt = () => {
+  const txt = document.getElementById('prompt-output').value;
+  navigator.clipboard.writeText(txt).then(() => toast('✓ Kopiert!', 'success'));
+};
+
+window.scoreIdee = async (id) => { toast('KI-Score kommt bald!', ''); };
+window.genMonatsBriefing = () => { toast('Briefing wird generiert...', ''); };
+
+// ====================================================
+// INIT
+// ====================================================
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('auth-pw').addEventListener('keydown', e => { if (e.key === 'Enter') window.doLogin(); });
+  document.querySelectorAll('.modal-overlay').forEach(m => m.addEventListener('click', e => { if (e.target === m) m.classList.remove('open'); }));
+});
+</script>
+
+<style>
+/* ===== RESET & VARIABLEN ===== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--blue:#1A6FD4;--cyan:#00C8E8;--dark:#0D1117;--dark2:#161B22;--dark3:#1E2530;--text:#E6EDF3;--muted:#8B949E;--border:rgba(255,255,255,0.08);--grad:linear-gradient(135deg,#1A6FD4,#00C8E8);--green:#4ADE80;--red:#FF5F57;--sw:240px}
+html,body{height:100%;overflow:hidden;font-family:"DM Sans",sans-serif;background:var(--dark);color:var(--text)}
+
+/* ===== AUTH SCREEN ===== */
+#auth-screen{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(26,111,212,.18),transparent 70%)}
+.auth-box{background:var(--dark2);border:1px solid var(--border);border-radius:18px;padding:2.5rem;width:100%;max-width:420px}
+.auth-logo{text-align:center;margin-bottom:1.75rem}
+.auth-sub{font-family:"Space Mono",monospace;font-size:.6rem;color:var(--muted);letter-spacing:.12em;margin-top:.4rem}
+.auth-heading{font-size:1.05rem;font-weight:600;text-align:center;margin-bottom:1.25rem}
+.auth-field{display:flex;flex-direction:column;gap:.35rem;margin-bottom:.85rem}
+.auth-field label{font-family:"Space Mono",monospace;font-size:.62rem;color:var(--muted);letter-spacing:.08em}
+.auth-field input{background:var(--dark3);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:.65rem .9rem;font-family:inherit;font-size:.9rem;outline:none;width:100%}
+.auth-field input:focus{border-color:rgba(0,200,232,.55)}
+#auth-msg{display:none;font-size:.82rem;padding:.65rem .9rem;border-radius:8px;margin-bottom:.85rem}
+.auth-btn{width:100%;padding:.8rem;border-radius:9px;border:none;background:var(--grad);color:#fff;font-family:inherit;font-size:.95rem;font-weight:600;cursor:pointer}
+.auth-btn:disabled{opacity:.45;cursor:not-allowed}
+.auth-note{margin-top:1.25rem;padding:.9rem;background:var(--dark3);border-radius:9px;font-size:.78rem;color:var(--muted);border:1px solid var(--border)}
+
+/* ===== LOADING ===== */
+#loading{position:fixed;inset:0;background:rgba(13,17,23,.88);z-index:300;display:none;align-items:center;justify-content:center;flex-direction:column;gap:1rem}
+.spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--cyan);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ===== APP LAYOUT ===== */
+#app-screen{display:none;width:100%;height:100vh}
+.sidebar{width:var(--sw);flex-shrink:0;background:var(--dark2);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh;overflow-y:auto}
+.sb-logo{padding:1.5rem 1.25rem 1rem;border-bottom:1px solid var(--border)}
+.sb-logo small{font-family:"Space Mono",monospace;font-size:.6rem;color:var(--muted);letter-spacing:.1em;display:block;margin-top:.3rem}
+.sb-sec{font-family:"Space Mono",monospace;font-size:.6rem;color:var(--muted);letter-spacing:.14em;padding:.9rem 1.25rem .4rem;text-transform:uppercase}
+.nav-item{display:flex;align-items:center;gap:.75rem;padding:.65rem 1.25rem;cursor:pointer;font-size:.88rem;font-weight:500;color:var(--muted);transition:all .15s;border-left:2px solid transparent}
+.nav-item:hover{background:rgba(255,255,255,.04);color:var(--text)}
+.nav-item.active{background:rgba(0,200,232,.07);color:var(--cyan);border-left-color:var(--cyan)}
+.nav-item span.ic{font-size:1rem;width:20px;text-align:center}
+.sb-user{margin-top:auto;padding:1rem 1.25rem;border-top:1px solid var(--border)}
+.sb-user strong{color:var(--text);display:block;font-size:.82rem;margin-bottom:.2rem}
+#user-email{font-size:.75rem;color:var(--muted);margin-bottom:.65rem;word-break:break-all}
+.logout-btn{width:100%;padding:.5rem;border-radius:7px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:inherit;font-size:.8rem;cursor:pointer}
+.logout-btn:hover{border-color:var(--red);color:var(--red)}
+.main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 1.75rem;height:64px;border-bottom:1px solid var(--border);background:var(--dark2);flex-shrink:0}
+.topbar h1{font-size:1.15rem;font-weight:600}
+.content{flex:1;overflow-y:auto;padding:1.5rem 1.75rem}
+.page{display:none}.page.active{display:block}
+
+/* ===== CARDS & COMPONENTS ===== */
+.card{background:var(--dark2);border:1px solid var(--border);border-radius:12px;margin-bottom:1.25rem}
+.card-header{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--border)}
+.card-header h3{font-size:.95rem;font-weight:600}
+.card-body{padding:1.25rem}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.25rem}
+.stat-card{background:var(--dark2);border:1px solid var(--border);border-radius:10px;padding:1.1rem 1.25rem}
+.stat-label{font-family:"Space Mono",monospace;font-size:.62rem;color:var(--muted);letter-spacing:.1em;margin-bottom:.5rem}
+.stat-val{font-size:1.6rem;font-weight:700;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.1}
+.stat-change{font-size:.74rem;color:var(--muted);margin-top:.3rem}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.83rem}
+th{font-family:"Space Mono",monospace;font-size:.62rem;color:var(--muted);letter-spacing:.08em;padding:.75rem 1rem;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:.7rem 1rem;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,.02)}
+
+/* ===== BADGES ===== */
+.badge{display:inline-block;font-size:.68rem;font-family:"Space Mono",monospace;padding:.2rem .6rem;border-radius:4px;white-space:nowrap}
+.badge-new{background:rgba(26,111,212,.2);color:#60A5FA;border:1px solid rgba(26,111,212,.4)}
+.badge-prog{background:rgba(251,191,36,.1);color:#FCD34D;border:1px solid rgba(251,191,36,.3)}
+.badge-done{background:rgba(74,222,128,.1);color:var(--green);border:1px solid rgba(74,222,128,.3)}
+.badge-draft{background:rgba(255,255,255,.06);color:var(--muted);border:1px solid var(--border)}
+.badge-sent{background:rgba(0,200,232,.1);color:var(--cyan);border:1px solid rgba(0,200,232,.3)}
+.badge-paid{background:rgba(74,222,128,.1);color:var(--green);border:1px solid rgba(74,222,128,.3)}
+.badge-overdue{background:rgba(255,95,87,.1);color:var(--red);border:1px solid rgba(255,95,87,.3)}
+
+/* ===== BUTTONS ===== */
+.btn{background:var(--grad);color:#fff;border:none;cursor:pointer;padding:.55rem 1.2rem;border-radius:7px;font-family:inherit;font-size:.85rem;font-weight:600;transition:opacity .15s;white-space:nowrap}
+.btn:hover{opacity:.85}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border);cursor:pointer;padding:.5rem 1rem;border-radius:7px;font-family:inherit;font-size:.82rem;font-weight:500;transition:all .15s}
+.btn-ghost:hover{border-color:var(--cyan);color:var(--cyan)}
+.btn-icon{background:transparent;border:none;cursor:pointer;color:var(--muted);font-size:.95rem;padding:.3rem .5rem;border-radius:5px;transition:color .15s}
+.btn-icon:hover{color:var(--red)}
+
+/* ===== FORMULARE ===== */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.form-group{display:flex;flex-direction:column;gap:.35rem}
+.form-group.full{grid-column:1/-1}
+label{font-family:"Space Mono",monospace;font-size:.62rem;color:var(--muted);letter-spacing:.08em}
+input,select,textarea{background:var(--dark3);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:.55rem .85rem;font-family:inherit;font-size:.88rem;outline:none;width:100%}
+input:focus,select:focus,textarea:focus{border-color:rgba(0,200,232,.5)}
+textarea{resize:vertical;min-height:80px}
+select option{background:var(--dark3)}
+
+/* ===== MODALS ===== */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:100;display:none;align-items:center;justify-content:center;padding:2rem;overflow-y:auto}
+.modal-overlay.open{display:flex}
+.modal{background:var(--dark2);border:1px solid var(--border);border-radius:14px;width:100%;max-width:560px;margin:auto;max-height:90vh;overflow-y:auto}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--dark2)}
+.modal-header h3{font-size:1rem;font-weight:600}
+.modal-body{padding:1.5rem}
+.modal-footer{padding:1rem 1.5rem;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:.75rem;position:sticky;bottom:0;background:var(--dark2)}
+
+/* ===== IDEEN KACHELN ===== */
+.idea-card{background:var(--dark3);border:1px solid var(--border);border-radius:10px;padding:1rem 1.25rem;transition:border-color .15s;margin-bottom:1rem}
+.idea-card:hover{border-color:rgba(0,200,232,.4)}
+.idea-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:.5rem;flex-wrap:wrap;gap:0.5rem}
+.idea-header h4{font-size:.92rem;font-weight:600}
+.idea-actions{display:flex;gap:.25rem;align-items:center;flex-wrap:wrap}
+.idea-desc{font-size:.82rem;color:var(--muted);line-height:1.5;margin-bottom:.5rem}
+.idea-meta{font-size:.78rem;color:var(--muted);margin-top:.2rem}
+.idea-meta.potential{color:var(--cyan)}
+.idea-tags{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem}
+.idea-tag{font-size:.65rem;background:rgba(26,111,212,.15);color:var(--cyan);border:1px solid rgba(26,111,212,.3);padding:.15rem .55rem;border-radius:3px;font-family:"Space Mono",monospace}
+.master-prompt-btn{background:linear-gradient(135deg,rgba(124,58,237,0.1),rgba(26,111,212,0.1));border:1px solid rgba(124,58,237,0.3);color:#A78BFA;cursor:pointer;padding:.5rem;border-radius:6px;font-size:.75rem;width:100%;margin-top:.5rem}
+.ideen-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem}
+.page-header{display:flex;gap:.75rem;margin-bottom:1.25rem;align-items:center;flex-wrap:wrap}
+.filter-select{width:auto;font-size:.82rem;padding:.45rem .85rem}
+
+/* ===== PRODUKTE ===== */
+.product-card{background:var(--dark3);border:1px solid var(--border);border-radius:10px;padding:1.25rem;margin-bottom:1rem}
+.product-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;flex-wrap:wrap;gap:0.5rem}
+.product-header h3{font-size:1rem;font-weight:600}
+.product-desc{font-size:.85rem;color:var(--muted);margin-bottom:1rem}
+.product-price{background:var(--dark2);border-radius:8px;padding:.75rem}
+.price-label{font-family:"Space Mono",monospace;font-size:.62rem;color:var(--muted);letter-spacing:.08em;margin-bottom:.2rem}
+.price-value{font-size:1.2rem;font-weight:700;color:var(--cyan)}
+
+/* ===== KUNDEN ===== */
+.customer-card{background:var(--dark3);border:1px solid var(--border);border-radius:10px;padding:1.25rem;margin-bottom:1rem}
+.customer-header{display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem;flex-wrap:wrap}
+.customer-avatar{width:40px;height:40px;border-radius:50%;background:var(--grad);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;flex-shrink:0}
+
+/* ===== ACCOUNTING ===== */
+.accounting-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1.25rem}
+.acc-card{background:var(--dark2);border:1px solid var(--border);border-radius:10px;padding:1.1rem 1.25rem;margin-bottom:0}
+.acc-card .label{font-family:"Space Mono",monospace;font-size:.62rem;color:var(--muted);letter-spacing:.1em;margin-bottom:.5rem}
+.acc-card .value{font-size:1.4rem;font-weight:700;line-height:1.1}
+.acc-card .value.green{color:var(--green)}.acc-card .value.red{color:var(--red)}
+.acc-card .value.blue{background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+
+/* ===== OKRS ===== */
+.okr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:1rem}
+.okr-card{background:var(--dark3);border:1px solid var(--border);border-radius:10px;padding:1.25rem}
+.okr-progress{height:8px;background:var(--dark2);border-radius:4px;margin:.75rem 0;overflow:hidden}
+.progress-bar{height:100%;background:var(--grad);border-radius:4px}
+
+/* ===== CHAT STYLES ===== */
+.chat-message{display:flex;gap:1rem;margin-bottom:1rem;align-items:flex-start}
+.chat-message.user{flex-direction:row-reverse}
+.chat-avatar{width:36px;height:36px;border-radius:50%;background:var(--dark3);display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0;border:1px solid var(--border)}
+.chat-message.user .chat-avatar{background:var(--grad);color:white}
+.chat-bubble{max-width:70%;padding:0.75rem 1rem;border-radius:12px;background:var(--dark3);border:1px solid var(--border);color:var(--text);line-height:1.5;text-align:left}
+.chat-message.user .chat-bubble{background:var(--grad);color:white;border:none}
+.typing-dot{animation:typing 1.4s infinite;font-size:1.5rem;line-height:0;margin:0 2px}
+.typing-dot:nth-child(2){animation-delay:0.2s}
+.typing-dot:nth-child(3){animation-delay:0.4s}
+@keyframes typing{0%,60%,100%{opacity:0.3}30%{opacity:1}}
+.chat-save{display:flex;justify-content:flex-end;margin-top:0.5rem;margin-bottom:1rem}
+#chat-msgs{min-height:300px;max-height:500px;overflow-y:auto;padding:1rem}
+
+/* ===== ALERTS & LISTS ===== */
+.list-item{display:flex;align-items:center;justify-content:space-between;padding:.5rem 1.25rem;border-bottom:1px solid rgba(255,255,255,.04)}
+.list-item:last-child{border-bottom:none}
+.alert-item{padding:.5rem .85rem;border-radius:6px;font-size:.82rem;font-weight:500;margin-bottom:.35rem;border:1px solid transparent}
+.alert-item.red{background:rgba(255,95,87,.1);color:var(--red);border-color:rgba(255,95,87,.25)}
+.alert-item.yellow{background:rgba(252,211,77,.08);color:#FCD34D;border-color:rgba(252,211,77,.2)}
+.alert-item.green{background:rgba(74,222,128,.08);color:var(--green);border-color:rgba(74,222,128,.2)}
+.alert-item.blue{background:rgba(0,200,232,.08);color:var(--cyan);border-color:rgba(0,200,232,.2)}
+
+/* ===== EMPTY STATES ===== */
+.empty-state{text-align:center;padding:3rem 1rem;color:var(--muted)}
+.empty-state .icon{font-size:2.5rem;margin-bottom:.75rem}
+.empty-state .btn{margin-top:1rem}
+
+/* ===== SCORE CARD ===== */
+.score-card{margin-top:.85rem;padding:.85rem;background:var(--dark);border-radius:8px;border:1px solid var(--border)}
+.score-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;font-family:'Space Mono',monospace;font-size:.62rem;color:var(--muted)}
+.score-grid{display:grid;grid-template-columns:1fr 1fr;gap:.4rem .75rem;font-size:.73rem;color:var(--muted)}
+.score-empfehlung{margin-top:.6rem;font-size:.75rem;color:var(--cyan);line-height:1.4}
+.ai-suggest-btn{background:rgba(0,200,232,.08);border:1px solid rgba(0,200,232,.25);color:var(--cyan);cursor:pointer;padding:.35rem .85rem;border-radius:20px;font-size:.78rem;transition:background .15s}
+
+/* ===== TOASTS ===== */
+#toasts{position:fixed;bottom:1.5rem;right:1.5rem;z-index:999;display:flex;flex-direction:column;gap:.5rem}
+.toast{background:var(--dark2);border:1px solid var(--border);border-radius:8px;padding:.75rem 1.1rem;font-size:.85rem;display:flex;align-items:center;gap:.6rem;animation:slideIn .25s ease;min-width:220px;border-left:3px solid var(--cyan)}
+.toast.success{border-left-color:var(--green)}.toast.error{border-left-color:var(--red)}
+@keyframes slideIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+
+/* ===== PROMPT OUTPUT ===== */
+.prompt-output{width:100%;min-height:400px;font-family:'Space Mono',monospace;font-size:.78rem;line-height:1.7;background:var(--dark3);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:1rem;resize:vertical;outline:none}
+
+/* ===== SCROLLBAR ===== */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px}
+
+/* ===== DASHBOARD GRID ===== */
+.dashboard-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem}
+</style>
+</head>
+<body>
+
+<!-- LOADING -->
+<div id="loading"><div class="spinner"></div><div style="font-size:.85rem;color:var(--muted);font-family:'Space Mono',monospace">Daten laden...</div></div>
+
+<!-- AUTH SCREEN -->
+<div id="auth-screen">
+  <div class="auth-box">
+    <div class="auth-logo">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 36" height="34">
+        <defs><linearGradient id="lg" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#1A6FD4"/><stop offset="100%" stop-color="#00C8E8"/></linearGradient></defs>
+        <text x="0" y="26" font-family="DM Sans,sans-serif" font-weight="300" font-size="28" fill="#fff">Zero</text>
+        <text x="66" y="26" font-family="DM Sans,sans-serif" font-weight="800" font-size="28" fill="url(#lg)">Gen</text>
+        <line x1="0" y1="32" x2="158" y2="32" stroke="url(#lg)" stroke-width="1.5" stroke-linecap="round" opacity=".5"/>
+      </svg>
+      <div class="auth-sub">CRM WORKSPACE</div>
+    </div>
+    <div class="auth-heading">Willkommen zurück</div>
+    <div id="auth-msg"></div>
+    <div class="auth-field">
+      <label>EMAIL-ADRESSE</label>
+      <input id="auth-email" type="email" placeholder="deine@email.com" autocomplete="email">
+    </div>
+    <div class="auth-field">
+      <label>PASSWORT</label>
+      <input id="auth-pw" type="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <button id="auth-btn" class="auth-btn" onclick="doLogin()">Anmelden</button>
+    <div class="auth-note">
+      🔒 <strong style="color:var(--text)">Privater Zugang:</strong> Nur autorisierte Benutzer.
+    </div>
+  </div>
+</div>
+
+<!-- APP SCREEN -->
+<div id="app-screen" style="display:none">
+  <aside class="sidebar">
+    <div class="sb-logo">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 36" height="28">
+        <defs><linearGradient id="lg2" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#1A6FD4"/><stop offset="100%" stop-color="#00C8E8"/></linearGradient></defs>
+        <text x="0" y="26" font-family="DM Sans,sans-serif" font-weight="300" font-size="28" fill="#fff">Zero</text>
+        <text x="66" y="26" font-family="DM Sans,sans-serif" font-weight="800" font-size="28" fill="url(#lg2)">Gen</text>
+        <line x1="0" y1="32" x2="158" y2="32" stroke="url(#lg2)" stroke-width="1.5" stroke-linecap="round" opacity=".5"/>
+      </svg>
+      <small>CRM &amp; WORKSPACE</small>
+    </div>
+
+    <div class="sb-sec">Übersicht</div>
+    <div class="nav-item active" onclick="goto('dashboard',this)"><span class="ic">📊</span> Dashboard</div>
+
+    <div class="sb-sec">App-Entwicklung</div>
+    <div class="nav-item" onclick="goto('brainstorm',this)"><span class="ic">🧠</span> KI Brainstorming</div>
+    <div class="nav-item" onclick="goto('ideen',this)"><span class="ic">💡</span> Ideen-Board</div>
+    <div class="nav-item" onclick="goto('auftraege',this)"><span class="ic">📋</span> Aufträge</div>
+
+    <div class="sb-sec">Business</div>
+    <div class="nav-item" onclick="goto('kunden',this)"><span class="ic">👥</span> Kunden</div>
+    <div class="nav-item" onclick="goto('angebote',this)"><span class="ic">📄</span> Angebote</div>
+    <div class="nav-item" onclick="goto('rechnungen',this)"><span class="ic">🧾</span> Rechnungen</div>
+    <div class="nav-item" onclick="goto('tasks',this)"><span class="ic">✅</span> Aufgaben</div>
+    <div class="nav-item" onclick="goto('okrs',this)"><span class="ic">🎯</span> Ziele & OKRs</div>
+    <div class="nav-item" onclick="goto('mrr',this)"><span class="ic">📈</span> MRR Tracker</div>
+
+    <div class="sb-sec">Buchhaltung</div>
+    <div class="nav-item" onclick="goto('produkte',this)"><span class="ic">📦</span> Produkte</div>
+    <div class="nav-item" onclick="goto('einnahmen',this)"><span class="ic">💰</span> Einnahmen</div>
+    <div class="nav-item" onclick="goto('ausgaben',this)"><span class="ic">📤</span> Ausgaben</div>
+    <div class="nav-item" onclick="goto('uebersicht',this)"><span class="ic">📈</span> Übersicht</div>
+
+    <div class="sb-user">
+      <strong>ZeroGen</strong>
+      <div id="user-email"></div>
+      <button class="logout-btn" onclick="doLogout()">↪ Abmelden</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <h1 id="page-title">Dashboard</h1>
+      <button class="btn-ghost" onclick="genMonatsBriefing()" style="font-size:.75rem">📊 Monats-Briefing</button>
+    </div>
+
+    <div class="content">
+      <!-- DASHBOARD -->
+      <div class="page active" id="page-dashboard">
+        <div class="stats-grid">
+          <div class="stat-card"><div class="stat-label">APP-IDEEN</div><div class="stat-val" id="d-ideen">0</div><div class="stat-change">Gesamt</div></div>
+          <div class="stat-card"><div class="stat-label">OFFENE AUFTRÄGE</div><div class="stat-val" id="d-auf">0</div><div class="stat-change">In Arbeit</div></div>
+          <div class="stat-card"><div class="stat-label">EINNAHMEN MTD</div><div class="stat-val" id="d-ein">CHF 0</div><div class="stat-change">Dieser Monat</div></div>
+          <div class="stat-card"><div class="stat-label">PRODUKTE AKTIV</div><div class="stat-val" id="d-prod">0</div><div class="stat-change">Live / Beta</div></div>
+        </div>
+        <div class="dashboard-grid">
+          <div class="card"><div class="card-header"><h3>Neueste Ideen</h3><button class="btn-ghost" onclick="goto('ideen')">Alle</button></div><div id="d-ideen-list"></div></div>
+          <div class="card"><div class="card-header"><h3>Offene Aufträge</h3><button class="btn-ghost" onclick="goto('auftraege')">Alle</button></div><div class="table-wrap"><table><thead><tr><th>TITEL</th><th>STATUS</th><th>FÄLLIG</th></tr></thead><tbody id="d-auf-table"></tbody></table></div></div>
+        </div>
+        <div class="dashboard-grid" style="margin-top:1.25rem">
+          <div class="card"><div class="card-header"><h3>🔔 Benachrichtigungen</h3></div><div id="d-alerts" style="padding:.75rem"></div></div>
+          <div class="card"><div class="card-header"><h3>Produkt-Umsatz</h3></div><div class="card-body" id="d-prod-rev"></div></div>
+        </div>
+      </div>
+
+      <!-- IDEEN SEITE -->
+      <div class="page" id="page-ideen">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-idee')">+ Neue Idee</button>
+          <select id="ideen-filter" onchange="renderIdeen()" class="filter-select">
+            <option value="">Alle Status</option>
+            <option>Idee</option><option>In Analyse</option><option>In Entwicklung</option><option>Live</option><option>Archiviert</option>
+          </select>
+        </div>
+        <div id="ideen-grid" class="ideen-grid"></div>
+      </div>
+
+      <!-- BRAINSTORMING SEITE -->
+      <div class="page" id="page-brainstorm">
+        <div class="card" style="padding:2rem;text-align:center">
+          <h3>🧠 KI Brainstorming</h3>
+          <p style="margin:1rem 0;color:var(--muted)">Chatte mit der KI über neue App-Ideen</p>
+          <div style="max-width:400px;margin:0 auto">
+            <textarea id="chat-in" placeholder="Deine Frage..." style="min-height:80px;margin-bottom:1rem"></textarea>
+            <div style="display:flex;gap:.5rem">
+              <button class="btn" onclick="chat()">Senden</button>
+              <button class="btn-ghost" onclick="clearChat()">Leeren</button>
+            </div>
+          </div>
+          <div id="chat-msgs" style="margin-top:2rem;text-align:left"></div>
+          <div style="margin-top:1rem;display:flex;gap:.5rem;justify-content:center;flex-wrap:wrap">
+            <button class="btn-ghost" onclick="suggest('Handwerk Ideen für Schweizer KMU')">🔨 Handwerk</button>
+            <button class="btn-ghost" onclick="suggest('KI Tools für Restaurants')">🤖 KI-Tools</button>
+            <button class="btn-ghost" onclick="suggest('Nischen-Apps für die Schweiz')">🇨🇭 Nischen</button>
+          </div>
+        </div>
+        <div class="card" style="margin-top:1rem">
+          <div class="card-header">
+            <h3>✦ KI-Status</h3>
+            <span id="ki-status-dot" style="color:var(--red)">●</span>
+          </div>
+          <div class="card-body">
+            <div id="ki-status-text">Kein API-Key</div>
+            <div id="ki-status-sub" style="cursor:pointer;color:var(--cyan);margin-top:.5rem" onclick="showApiKeyModal()">→ Klick zum Einrichten</div>
+            <button class="btn-ghost" onclick="syncApiKeys()" style="width:100%;margin-top:1rem">↻ Mit Firebase syncen</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- AUFTRÄGE SEITE -->
+      <div class="page" id="page-auftraege">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-auftrag')">+ Neuer Auftrag</button>
+        </div>
+        <div class="card">
+          <div class="table-wrap"><table><thead><tr><th>TITEL</th><th>KUNDE</th><th>PRIO</th><th>STATUS</th><th>BUDGET</th><th>FÄLLIG</th><th></th></tr></thead><tbody id="auf-tbody"></tbody></table></div>
+        </div>
+      </div>
+      
+      <!-- PRODUKTE SEITE -->
+      <div class="page" id="page-produkte">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-produkt')">+ Neues Produkt</button>
+        </div>
+        <div id="prod-grid" class="ideen-grid"></div>
+      </div>
+      
+      <!-- EINNAHMEN SEITE -->
+      <div class="page" id="page-einnahmen">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-einnahme')">+ Einnahme erfassen</button>
+          <select id="ein-filter" onchange="renderEinnahmen()" class="filter-select">
+            <option value="">Alle Produkte</option>
+          </select>
+          <span style="margin-left:auto;font-size:.85rem">Total: <strong id="ein-total" style="color:var(--green)">CHF 0</strong></span>
+        </div>
+        <div class="card">
+          <div class="table-wrap"><table><thead><tr><th>DATUM</th><th>PRODUKT</th><th>BESCHREIBUNG</th><th>BETRAG</th><th>KANAL</th><th></th></tr></thead><tbody id="ein-tbody"></tbody></table></div>
+        </div>
+      </div>
+      
+      <!-- AUSGABEN SEITE -->
+      <div class="page" id="page-ausgaben">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-ausgabe')">+ Ausgabe erfassen</button>
+          <span style="margin-left:auto;font-size:.85rem">Total: <strong id="aus-total" style="color:var(--red)">CHF 0</strong></span>
+        </div>
+        <div class="card">
+          <div class="table-wrap"><table><thead><tr><th>DATUM</th><th>KATEGORIE</th><th>BESCHREIBUNG</th><th>BETRAG</th><th></th></tr></thead><tbody id="aus-tbody"></tbody></table></div>
+        </div>
+      </div>
+      
+      <!-- ÜBERSICHT SEITE -->
+      <div class="page" id="page-uebersicht">
+        <div id="acc-monat-content"></div>
+      </div>
+      
+      <!-- KUNDEN SEITE -->
+      <div class="page" id="page-kunden">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-kunde')">+ Neuer Kunde</button>
+        </div>
+        <div id="kunden-grid" class="ideen-grid"></div>
+      </div>
+      
+      <!-- ANGEBOTE SEITE -->
+      <div class="page" id="page-angebote">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-angebot')">+ Neues Angebot</button>
+        </div>
+        <div id="angebote-content"></div>
+      </div>
+      
+      <!-- AUFGABEN SEITE -->
+      <div class="page" id="page-tasks">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-task')">+ Neue Aufgabe</button>
+        </div>
+        <div id="tasks-content"></div>
+      </div>
+      
+      <!-- RECHNUNGEN SEITE -->
+      <div class="page" id="page-rechnungen">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-rechnung')">+ Neue Rechnung</button>
+        </div>
+        <div id="rechnungen-content"></div>
+      </div>
+      
+      <!-- OKRs SEITE -->
+      <div class="page" id="page-okrs">
+        <div class="page-header">
+          <button class="btn" onclick="openModal('modal-okr')">+ Neues Ziel</button>
+        </div>
+        <div id="okrs-content"></div>
+      </div>
+      
+      <!-- MRR SEITE -->
+      <div class="page" id="page-mrr">
+        <div id="mrr-content"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- IDEEN MODAL -->
+<div class="modal-overlay" id="modal-idee">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-idee-title">💡 Neue App-Idee</h3>
+      <button class="btn-icon" onclick="closeModal('modal-idee')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="editing-idee-id" value="">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>APP-NAME *</label>
+          <input id="i-name" placeholder="z.B. RestoPro">
+        </div>
+        <div class="form-group full">
+          <label>BESCHREIBUNG</label>
+          <textarea id="i-desc" placeholder="Was macht diese App? Für wen?"></textarea>
+        </div>
+        <div class="form-group">
+          <label>ZIELGRUPPE</label>
+          <input id="i-zielgruppe" placeholder="z.B. Restaurantbesitzer">
+        </div>
+        <div class="form-group">
+          <label>STATUS</label>
+          <select id="i-status">
+            <option>Idee</option><option>In Analyse</option><option>In Entwicklung</option><option>Live</option><option>Archiviert</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>PRIORITÄT</label>
+          <select id="i-prio">
+            <option>Niedrig</option><option>Mittel</option><option selected>Hoch</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>POTENTIAL</label>
+          <input id="i-potential" placeholder="z.B. CHF 500/Mo">
+        </div>
+        <div class="form-group full">
+          <label>TAGS (KOMMA-GETRENNT)</label>
+          <input id="i-tags" placeholder="KI, Handwerk, SaaS...">
+        </div>
+        <div class="form-group full">
+          <label>NOTIZEN / KI-OUTPUT</label>
+          <textarea id="i-notes" placeholder="Marktanalyse, Features, KI-Output..." style="min-height:120px"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-idee')">Abbrechen</button>
+      <button class="btn" onclick="saveIdee()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- AUFTRAG MODAL -->
+<div class="modal-overlay" id="modal-auftrag">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>📋 Neuer Auftrag</h3>
+      <button class="btn-icon" onclick="closeModal('modal-auftrag')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>TITEL</label>
+          <input id="a-titel" placeholder="z.B. Website Entwicklung">
+        </div>
+        <div class="form-group">
+          <label>KUNDE</label>
+          <input id="a-kunde" placeholder="Kundenname">
+        </div>
+        <div class="form-group">
+          <label>STATUS</label>
+          <select id="a-status">
+            <option>Offen</option><option>In Arbeit</option><option>Review</option><option>Abgeschlossen</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>PRIORITÄT</label>
+          <select id="a-prio">
+            <option>Niedrig</option><option>Mittel</option><option>Hoch</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>BUDGET (CHF)</label>
+          <input id="a-budget" type="number" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label>FÄLLIG AM</label>
+          <input id="a-faellig" type="date">
+        </div>
+        <div class="form-group full">
+          <label>BESCHREIBUNG</label>
+          <textarea id="a-desc" placeholder="Details zum Auftrag"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-auftrag')">Abbrechen</button>
+      <button class="btn" onclick="saveAuf()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- PRODUKT MODAL -->
+<div class="modal-overlay" id="modal-produkt">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>📦 Neues Produkt</h3>
+      <button class="btn-icon" onclick="closeModal('modal-produkt')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>PRODUKTNAME</label>
+          <input id="p-name" placeholder="z.B. HandwerkPro">
+        </div>
+        <div class="form-group full">
+          <label>BESCHREIBUNG</label>
+          <textarea id="p-desc" placeholder="Was macht das Produkt?"></textarea>
+        </div>
+        <div class="form-group">
+          <label>PREIS / MONAT (CHF)</label>
+          <input id="p-preis" type="number" placeholder="149.00">
+        </div>
+        <div class="form-group">
+          <label>EINMALPREIS (CHF)</label>
+          <input id="p-einmal" type="number" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label>STATUS</label>
+          <select id="p-status">
+            <option>In Entwicklung</option><option>Beta</option><option>Live</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>PREISMODELL</label>
+          <select id="p-modell">
+            <option>SaaS / Abo</option><option>Einmalig</option><option>Massarbeit</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-produkt')">Abbrechen</button>
+      <button class="btn" onclick="saveProd()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- EINNAHME MODAL -->
+<div class="modal-overlay" id="modal-einnahme">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>💰 Einnahme erfassen</h3>
+      <button class="btn-icon" onclick="closeModal('modal-einnahme')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>DATUM</label>
+          <input id="e-datum" type="date">
+        </div>
+        <div class="form-group">
+          <label>PRODUKT</label>
+          <select id="e-produkt">
+            <option value="">— Produkt wählen —</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>BETRAG (CHF)</label>
+          <input id="e-betrag" type="number" placeholder="0.00" step="0.01">
+        </div>
+        <div class="form-group">
+          <label>KANAL</label>
+          <select id="e-kanal">
+            <option>Direktkauf</option><option>Abo / Monatlich</option><option>Rechnung</option>
+          </select>
+        </div>
+        <div class="form-group full">
+          <label>BESCHREIBUNG</label>
+          <input id="e-desc" placeholder="z.B. Monatsabo Demo AG">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-einnahme')">Abbrechen</button>
+      <button class="btn" onclick="saveEin()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- AUSGABE MODAL -->
+<div class="modal-overlay" id="modal-ausgabe">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>📤 Ausgabe erfassen</h3>
+      <button class="btn-icon" onclick="closeModal('modal-ausgabe')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>DATUM</label>
+          <input id="au-datum" type="date">
+        </div>
+        <div class="form-group">
+          <label>KATEGORIE</label>
+          <select id="au-kat">
+            <option>Software / Tools</option><option>Hosting / Server</option><option>Marketing</option><option>Freelancer</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>BETRAG (CHF)</label>
+          <input id="au-betrag" type="number" placeholder="0.00" step="0.01">
+        </div>
+        <div class="form-group">
+          <label>LIEFERANT</label>
+          <input id="au-lief" placeholder="z.B. Vercel">
+        </div>
+        <div class="form-group full">
+          <label>BESCHREIBUNG</label>
+          <input id="au-desc" placeholder="z.B. Vercel Pro Plan">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-ausgabe')">Abbrechen</button>
+      <button class="btn" onclick="saveAus()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- KUNDE MODAL -->
+<div class="modal-overlay" id="modal-kunde">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>👥 Neuer Kunde</h3>
+      <button class="btn-icon" onclick="closeModal('modal-kunde')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>NAME *</label>
+          <input id="k-name" placeholder="Max Mustermann">
+        </div>
+        <div class="form-group">
+          <label>FIRMA</label>
+          <input id="k-firma" placeholder="Mustermann GmbH">
+        </div>
+        <div class="form-group">
+          <label>STATUS</label>
+          <select id="k-status">
+            <option>Lead</option><option>Aktiv</option><option>Inaktiv</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>EMAIL</label>
+          <input id="k-email" type="email" placeholder="max@firma.ch">
+        </div>
+        <div class="form-group">
+          <label>TELEFON</label>
+          <input id="k-tel" placeholder="+41 44 123 45 67">
+        </div>
+        <div class="form-group">
+          <label>ORT</label>
+          <input id="k-ort" placeholder="Zürich">
+        </div>
+        <div class="form-group full">
+          <label>NOTIZEN</label>
+          <textarea id="k-notizen" placeholder="Weitere Informationen..."></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-kunde')">Abbrechen</button>
+      <button class="btn" onclick="saveKunde()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- ANGEBOT MODAL -->
+<div class="modal-overlay" id="modal-angebot">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>📄 Angebot erstellen</h3>
+      <button class="btn-icon" onclick="closeModal('modal-angebot')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="ang-kunde-id">
+      <div style="background:rgba(0,200,232,.07);border:1px solid rgba(0,200,232,.2);border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">
+        👤 Kunde: <strong id="ang-kunde-name"></strong>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>ANGEBOTS-NR.</label>
+          <input id="ang-nr" placeholder="ANG-2025-001">
+        </div>
+        <div class="form-group">
+          <label>DATUM</label>
+          <input id="ang-datum" type="date">
+        </div>
+        <div class="form-group">
+          <label>GÜLTIG BIS</label>
+          <input id="ang-gueltig" type="date">
+        </div>
+        <div class="form-group">
+          <label>PRODUKT</label>
+          <select id="ang-produkt">
+            <option value="">— Produkt wählen —</option>
+          </select>
+        </div>
+      </div>
+      <p style="text-align:center;color:var(--muted);margin-top:1rem">Weitere Angebotsfunktionen folgen...</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-angebot')">Abbrechen</button>
+      <button class="btn" onclick="toast('Angebotsfunktion in Entwicklung')">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- TASK MODAL -->
+<div class="modal-overlay" id="modal-task">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>✅ Neue Aufgabe</h3>
+      <button class="btn-icon" onclick="closeModal('modal-task')">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="text-align:center;color:var(--muted)">Aufgabenfunktion in Entwicklung</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-task')">Schliessen</button>
+    </div>
+  </div>
+</div>
+
+<!-- RECHNUNG MODAL -->
+<div class="modal-overlay" id="modal-rechnung">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🧾 Neue Rechnung</h3>
+      <button class="btn-icon" onclick="closeModal('modal-rechnung')">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="text-align:center;color:var(--muted)">Rechnungsfunktion in Entwicklung</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-rechnung')">Schliessen</button>
+    </div>
+  </div>
+</div>
+
+<!-- OKR MODAL -->
+<div class="modal-overlay" id="modal-okr">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>🎯 Neues Ziel</h3>
+      <button class="btn-icon" onclick="closeModal('modal-okr')">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="text-align:center;color:var(--muted)">OKR-Funktion in Entwicklung</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-okr')">Schliessen</button>
+    </div>
+  </div>
+</div>
+
+<!-- MASTER PROMPT MODAL -->
+<div class="modal-overlay" id="modal-prompt">
+  <div class="modal" style="max-width:780px">
+    <div class="modal-header">
+      <div>
+        <h3 style="background:linear-gradient(135deg,#A78BFA,#00C8E8);-webkit-background-clip:text;-webkit-text-fill-color:transparent">⚡ Master-Prompt</h3>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.2rem" id="prompt-charcount">0 Zeichen</div>
+      </div>
+      <button class="btn-icon" onclick="closeModal('modal-prompt')">✕</button>
+    </div>
+    <div class="modal-body">
+      <textarea class="prompt-output" id="prompt-output" readonly style="min-height:400px"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-prompt')">Schliessen</button>
+      <button class="btn" onclick="copyPrompt()">📋 Kopieren</button>
+    </div>
+  </div>
+</div>
+
+<!-- API KEY MODAL -->
+<div class="modal-overlay" id="modal-apikey">
+  <div class="modal" style="max-width:500px">
+    <div class="modal-header">
+      <h3>✦ KI-Provider einrichten</h3>
+      <button class="btn-icon" onclick="closeModal('modal-apikey')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>KI-PROVIDER</label>
+        <select id="ki-provider-select" onchange="updateProviderLabel()">
+          <option value="gemini">✦ Gemini 1.5 Flash</option>
+          <option value="groq">⚡ Groq - Llama 3.3</option>
+        </select>
+      </div>
+      <div id="apikey-hint" class="hint-box" style="background:rgba(0,200,232,.06);border:1px solid rgba(0,200,232,.2);border-radius:8px;padding:.9rem 1rem;margin-bottom:1.25rem;font-size:.84rem;line-height:1.65"></div>
+      <div class="form-group">
+        <label id="apikey-label">GEMINI API KEY</label>
+        <input id="apikey-input" type="password" placeholder="AIzaSy...">
+      </div>
+      <div style="font-size:.76rem;color:var(--muted);margin-top:.6rem">🔒 Der Key wird in Firebase gespeichert.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-apikey')">Abbrechen</button>
+      <button class="btn" onclick="saveApiKey()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOASTS -->
+<div id="toasts"></div>
+
+</body>
+</html>

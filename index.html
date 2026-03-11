@@ -1,0 +1,1807 @@
+// ╔══════════════════════════════════════════════════╗
+// ║  FIREBASE CONFIG — ersetze mit deinen Werten    ║
+// ║  Firebase Console → Projekt → Web App hinzufügen║
+// ╚══════════════════════════════════════════════════╝
+const firebaseConfig = {
+  apiKey: "AIzaSyBEmDDTtv7rUKZ__yxMXfZt-tO8Z217wrw",
+  authDomain: "zerogen-crm.firebaseapp.com",
+  projectId: "zerogen-crm",
+  storageBucket: "zerogen-crm.firebasestorage.app",
+  messagingSenderId: "462477409182",
+  appId: "1:462477409182:web:43f9b3a07c02c89674b48f"
+};
+
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+
+// SESSION-Persistenz: automatischer Logout beim Tab-Schliessen
+await setPersistence(auth, browserSessionPersistence);
+
+// ─── STATE ───────────────────────────────────────────
+let currentUser = null;
+let S = { ideen:[], auftraege:[], produkte:[], einnahmen:[], ausgaben:[], kunden:[], angebote:[], tasks:[], rechnungen:[], okrs:[], nextId:{idee:1,auftrag:1,produkt:1,ein:1,aus:1,kunde:1,angebot:1,task:1,rechnung:1,okr:1} };
+
+// ─── FIRESTORE ───────────────────────────────────────
+const userCol  = (col) => collection(db, 'users', currentUser.uid, col);
+const userDocRef = (col, id) => doc(db, 'users', currentUser.uid, col, String(id));
+
+async function fsLoad() {
+  showLoading(true);
+  try {
+    for (const col of ['ideen','auftraege','produkte','einnahmen','ausgaben','kunden','angebote','tasks','rechnungen','okrs']) {
+      const snap = await getDocs(userCol(col));
+      S[col] = snap.docs.map(d => d.data());
+    }
+    const meta = await getDoc(doc(db,'users',currentUser.uid,'meta','counters'));
+    if (meta.exists()) S.nextId = { ...S.nextId, ...meta.data() };
+    if (!S.ideen.length && !S.produkte.length) await fsSeedDemo();
+  } catch(e) { console.error(e); }
+  showLoading(false);
+}
+
+async function fsSave(col, item) {
+  await setDoc(userDocRef(col, item.id), item);
+  await setDoc(doc(db,'users',currentUser.uid,'meta','counters'), S.nextId);
+}
+async function fsDelete(col, id) { await deleteDoc(userDocRef(col, id)); }
+
+async function fsSeedDemo() {
+  const now = today();
+  const seed = {
+    ideen: [
+      {id:1,name:'HandwerkPro',desc:'CRM für Schweizer Handwerksbetriebe.',zielgruppe:'Handwerker CH',status:'Live',prio:'Hoch',potential:'CHF 149/Mo',tags:['SaaS','CRM'],notes:'Flagship-Produkt.',createdAt:now},
+      {id:2,name:'PalettenTrack',desc:'Lager- und Logistikverwaltung.',zielgruppe:'Lager & Logistik',status:'In Entwicklung',prio:'Hoch',potential:'CHF 199/Mo',tags:['Logistik','SaaS'],notes:'',createdAt:now},
+    ],
+    auftraege:[{id:1,titel:'PalettenTrack MVP',kunde:'Intern',prio:'Hoch',status:'In Arbeit',budget:0,faellig:'2025-06-30',desc:'MVP fertigstellen.'}],
+    produkte:[
+      {id:1,name:'HandwerkPro',desc:'Die komplette Handwerker-Software.',preis:149,einmal:0,status:'Live',modell:'SaaS / Abo'},
+      {id:2,name:'PalettenTrack',desc:'Lager- und Logistikverwaltung.',preis:199,einmal:0,status:'Beta',modell:'SaaS / Abo'},
+      {id:3,name:'Massarbeit / Custom Dev',desc:'Individuelle Lösungen.',preis:0,einmal:4900,status:'Live',modell:'Massarbeit'},
+    ],
+    einnahmen:[
+      {id:1,datum:now,produktId:1,desc:'Monatsabo Demo AG',betrag:149,kanal:'Abo / Monatlich'},
+      {id:2,datum:now,produktId:3,desc:'Anzahlung Custom Projekt',betrag:1900,kanal:'Rechnung'},
+    ],
+    ausgaben:[
+      {id:1,datum:now,kat:'Hosting / Server',desc:'Vercel Pro Plan',betrag:20,lief:'Vercel'},
+      {id:2,datum:now,kat:'Software / Tools',desc:'Claude API Kosten',betrag:45,lief:'Anthropic'},
+    ]
+  };
+  S.nextId = {idee:3,auftrag:2,produkt:4,ein:3,aus:3};
+  for (const [col, items] of Object.entries(seed)) {
+    S[col] = items;
+    for (const item of items) await fsSave(col, item);
+  }
+}
+
+// ─── API-KEY MANAGEMENT MIT FIREBASE ─────────────────────────
+async function loadApiKeysFromFirebase() {
+  if (!currentUser) return;
+  
+  try {
+    const apiKeyDoc = await getDoc(doc(db, 'users', currentUser.uid, 'apikeys', 'current'));
+    
+    if (apiKeyDoc.exists()) {
+      const keys = apiKeyDoc.data();
+      
+      // Lokale Keys nur setzen, wenn sie in Firebase existieren
+      if (keys.gemini) {
+        localStorage.setItem('zerogen_gemini_key', keys.gemini);
+      }
+      if (keys.groq) {
+        localStorage.setItem('zerogen_groq_key', keys.groq);
+      }
+      if (keys.provider) {
+        localStorage.setItem('zerogen_ki_provider', keys.provider);
+      }
+      
+      updateKiStatus();
+      console.log('✅ API-Keys aus Firebase geladen');
+    }
+  } catch (e) {
+    console.error('Fehler beim Laden der API-Keys:', e);
+  }
+}
+
+async function saveApiKeysToFirebase(geminiKey, groqKey, provider) {
+  if (!currentUser) return false;
+  
+  try {
+    const keysData = {};
+    
+    // Nur speichern, wenn ein Key vorhanden ist
+    if (geminiKey) keysData.gemini = geminiKey;
+    if (groqKey) keysData.groq = groqKey;
+    if (provider) keysData.provider = provider;
+    
+    // Speichere die Keys in Firestore
+    await setDoc(doc(db, 'users', currentUser.uid, 'apikeys', 'current'), keysData);
+    
+    console.log('✅ API-Keys in Firebase gesichert');
+    return true;
+  } catch (e) {
+    console.error('Fehler beim Speichern der API-Keys:', e);
+    return false;
+  }
+}
+
+// ─── KI PROVIDER MANAGEMENT ────────────────────────────────────────
+function getKiProvider() {
+  return localStorage.getItem('zerogen_ki_provider') || 'gemini';
+}
+
+function getGeminiKey() {
+  const localKey = localStorage.getItem('zerogen_gemini_key');
+  if (localKey) return localKey;
+  return '';
+}
+
+function getGroqKey() {
+  const localKey = localStorage.getItem('zerogen_groq_key');
+  if (localKey) return localKey;
+  return '';
+}
+
+// ─── AUTH STATE ───────────────────────────────────────
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    currentUser = user;
+    document.getElementById('auth-screen').style.display = 'none';
+    document.getElementById('app-screen').style.display  = 'flex';
+    document.getElementById('user-email').textContent = user.email;
+    
+    // Zuerst API-Keys aus Firebase laden
+    await loadApiKeysFromFirebase();
+    
+    // Dann restliche Daten laden
+    await fsLoad();
+    renderDashboard();
+    updateKiStatus();
+    renderSidebarIdeas();
+  } else {
+    currentUser = null;
+    document.getElementById('auth-screen').style.display = 'flex';
+    document.getElementById('app-screen').style.display  = 'none';
+  }
+});
+
+// ─── AUTH FUNCTIONS ───────────────────────────────────
+window.doLogin = async () => {
+  const email = document.getElementById('auth-email').value.trim();
+  const pw = document.getElementById('auth-pw').value;
+
+  if (!email || !pw) {
+    authMsg('Bitte Email und Passwort eingeben');
+    return;
+  }
+
+  setAuthBusy(true);
+
+  try {
+    await signInWithEmailAndPassword(auth, email, pw);
+  } catch (e) {
+    setAuthBusy(false);
+    const errors = {
+      "auth/invalid-credential": "Email oder Passwort falsch.",
+      "auth/user-not-found": "Kein Account gefunden.",
+      "auth/wrong-password": "Falsches Passwort.",
+      "auth/too-many-requests": "Zu viele Versuche. Kurz warten."
+    };
+    authMsg(errors[e.code] || e.message);
+  }
+};
+
+window.doLogout = async () => {
+  try {
+    await signOut(auth);
+    // Clear local state but keep API keys in localStorage
+    S = {
+      ideen:[],
+      auftraege:[],
+      produkte:[],
+      einnahmen:[],
+      ausgaben:[],
+      kunden:[],
+      angebote:[],
+      tasks:[],
+      rechnungen:[],
+      okrs:[],
+      nextId:{
+        idee:1,auftrag:1,produkt:1,ein:1,aus:1,
+        kunde:1,angebot:1,task:1,rechnung:1,okr:1
+      }
+    };
+    toast('Erfolgreich abgemeldet');
+  } catch (e) {
+    console.error(e);
+    toast('Logout Fehler','error');
+  }
+};
+
+function authMsg(msg, ok=false) {
+  const el = document.getElementById('auth-msg');
+  el.textContent = msg; el.style.display = 'block';
+  el.style.color  = ok ? 'var(--green)' : 'var(--red)';
+  el.style.borderColor = ok ? 'rgba(74,222,128,.3)' : 'rgba(255,95,87,.2)';
+  el.style.background  = ok ? 'rgba(74,222,128,.06)' : 'rgba(255,95,87,.08)';
+}
+function setAuthBusy(on) {
+  const btn = document.getElementById('auth-btn');
+  if (btn) {
+    btn.disabled = on;
+    btn.textContent = on ? 'Bitte warten...' : 'Anmelden';
+  }
+}
+
+// ─── LOADING ──────────────────────────────────────────
+function showLoading(on) { document.getElementById('loading').style.display = on?'flex':'none'; }
+
+// ─── NAVIGATION ───────────────────────────────────────
+window.goto = (page, el) => {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+page).classList.add('active');
+  if(el) el.classList.add('active');
+  const t={dashboard:'Dashboard',brainstorm:'KI Brainstorming',ideen:'Ideen-Board',auftraege:'Aufträge',produkte:'Produkte',einnahmen:'Einnahmen',ausgaben:'Ausgaben',uebersicht:'Buchhaltungs-Übersicht',kunden:'Kunden',angebote:'Angebote',tasks:'Aufgaben',rechnungen:'Rechnungen',okrs:'Ziele & OKRs',mrr:'MRR Tracker'};
+  document.getElementById('page-title').textContent=t[page]||page;
+  ({dashboard:renderDashboard,ideen:renderIdeen,auftraege:renderAuftraege,produkte:renderProdukte,einnahmen:renderEinnahmen,ausgaben:renderAusgaben,uebersicht:renderUebersicht,kunden:renderKunden,mrr:renderMRR,angebote:renderAngebote,tasks:renderTasks,rechnungen:renderRechnungen,okrs:renderOKRs}[page]||(() => {}))();
+};
+
+// ─── HELPERS ──────────────────────────────────────────
+function fmt(n) { return 'CHF '+parseFloat(n||0).toLocaleString('de-CH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtDate(d) { return d ? new Date(d+'T00:00:00').toLocaleDateString('de-CH') : '—'; }
+function today() { return new Date().toISOString().split('T')[0]; }
+function badge(s) {
+  const m={'Idee':'draft','In Analyse':'prog','In Entwicklung':'prog','Live':'paid','Archiviert':'draft','Offen':'new','In Arbeit':'prog','Review':'sent','Abgeschlossen':'done','Pausiert':'draft','Beta':'sent','Eingestellt':'draft','Hoch':'overdue','Kritisch':'overdue','Mittel':'prog','Niedrig':'draft'};
+  return `<span class="badge badge-${m[s]||'draft'}">${s}</span>`;
+}
+function toast(msg,type) {
+  const c=document.getElementById('toasts');const t=document.createElement('div');
+  t.className='toast '+(type||'');t.innerHTML=(type==='success'?'✓ ':type==='error'?'✕ ':'ℹ ')+msg;
+  c.appendChild(t);setTimeout(()=>t.remove(),3000);
+}
+window.openModal  = (id) => { document.getElementById(id).classList.add('open'); if(id==='modal-einnahme'){fillSel('e-produkt');document.getElementById('e-datum').value=today();}if(id==='modal-ausgabe')document.getElementById('au-datum').value=today(); if(id==='modal-task'){const s=document.getElementById('t-auftrag');s.innerHTML='<option value="">— Kein Auftrag —</option>'+S.auftraege.map(a=>`<option value="${a.id}">${a.titel}</option>`).join('');} };
+window.closeModal = (id) => document.getElementById(id).classList.remove('open');
+function fillSel(id) { const s=document.getElementById(id);s.innerHTML='<option value="">— Produkt wählen —</option>';S.produkte.forEach(p=>s.innerHTML+=`<option value="${p.id}">${p.name}</option>`); }
+
+// ─── DASHBOARD ────────────────────────────────────────
+function renderDashboard() {
+  document.getElementById('d-ideen').textContent=S.ideen.length;
+  document.getElementById('d-auf').textContent=S.auftraege.filter(a=>a.status!=='Abgeschlossen').length;
+  document.getElementById('d-ein').textContent=fmt(S.einnahmen.filter(e=>e.datum&&e.datum.startsWith(today().slice(0,7))).reduce((s,e)=>s+parseFloat(e.betrag||0),0));
+  document.getElementById('d-prod').textContent=S.produkte.filter(p=>p.status==='Live'||p.status==='Beta').length;
+  document.getElementById('d-ideen-list').innerHTML=S.ideen.slice(0,4).map(i=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:.5rem 1.25rem;border-bottom:1px solid rgba(255,255,255,.04)"><span style="font-size:.85rem;font-weight:500">${i.name}</span>${badge(i.status)}</div>`).join('');
+  document.getElementById('d-auf-table').innerHTML=S.auftraege.filter(a=>a.status!=='Abgeschlossen').slice(0,5).map(a=>`<tr><td>${a.titel}</td><td>${badge(a.status)}</td><td>${fmtDate(a.faellig)}</td></tr>`).join('');
+  document.getElementById('d-prod-rev').innerHTML=S.produkte.map(p=>{const r=S.einnahmen.filter(e=>e.produktId==p.id).reduce((s,e)=>s+parseFloat(e.betrag||0),0);return`<div class="acc-card"><div class="label">${p.name.toUpperCase()}</div><div class="value blue">${fmt(r)}</div><div style="font-size:.74rem;color:var(--muted);margin-top:.3rem">${p.status}</div></div>`;}).join('');
+  // Tasks heute & überfällig
+  const taskHeute=S.tasks.filter(t=>t.faellig===today()&&t.status!=='Erledigt');
+  const taskUebf=S.tasks.filter(t=>t.faellig&&t.faellig<today()&&t.status!=='Erledigt');
+  const rechnOffen=S.rechnungen.filter(r=>r.status==='Offen'||r.status==='Gesendet');
+  const rechnUebf=S.rechnungen.filter(r=>r.faellig&&r.faellig<today()&&r.status!=='Bezahlt'&&r.status!=='Storniert');
+  const angAngen=S.angebote.filter(a=>a.status==='Angenommen');
+  const okrActive=S.okrs.filter(o=>!o.frist||o.frist>=today());
+  const el=document.getElementById('d-alerts');
+  if(el){
+    const items=[];
+    if(taskUebf.length) items.push(`<div class="alert-item red">⚠ ${taskUebf.length} überfällige Aufgabe${taskUebf.length>1?'n':''}</div>`);
+    if(taskHeute.length) items.push(`<div class="alert-item yellow">🔔 ${taskHeute.length} Aufgabe${taskHeute.length>1?'n':''} heute fällig</div>`);
+    if(rechnUebf.length) items.push(`<div class="alert-item red">🧾 ${rechnUebf.length} überfällige Rechnung${rechnUebf.length>1?'en':''}</div>`);
+    if(rechnOffen.length) items.push(`<div class="alert-item yellow">💰 ${fmt(rechnOffen.reduce((s,r)=>s+parseFloat(r.total||0),0))} offen</div>`);
+    if(angAngen.length) items.push(`<div class="alert-item green">✓ ${angAngen.length} Angebot${angAngen.length>1?'e':''} angenommen → Rechnung erstellen</div>`);
+    if(okrActive.length){const done=okrActive.filter(o=>parseFloat(o.aktuell||0)>=parseFloat(o.ziel||1)).length;items.push(`<div class="alert-item blue">🎯 ${done}/${okrActive.length} Ziele erreicht</div>`);}
+    el.innerHTML=items.length?items.join(''):'<div class="alert-item green">✓ Alles im grünen Bereich!</div>';
+  }
+}
+
+// ─── IDEEN ────────────────────────────────────────────
+function renderIdeen() {
+  const f=document.getElementById('ideen-filter').value;
+  const l=S.ideen.filter(i=>!f||i.status===f);
+  const g=document.getElementById('ideen-grid');
+  if(!l.length){g.innerHTML='<div class="empty-state" style="grid-column:1/-1"><div class="icon">💡</div><p>Noch keine Ideen. Starte das KI Brainstorming!</p></div>';return;}
+  g.innerHTML=l.map(i=>`<div class="idea-card"><div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:.5rem"><h4>${i.name}</h4><div style="display:flex;gap:.4rem">${badge(i.status)}<button class="btn-icon" onclick="delIdee(${i.id})" style="font-size:.8rem">🗑</button></div></div><p>${i.desc||''}</p>${i.zielgruppe?`<div style="font-size:.78rem;color:var(--muted);margin-top:.5rem">👥 ${i.zielgruppe}</div>`:''}${i.potential?`<div style="font-size:.78rem;color:var(--cyan);margin-top:.2rem">💰 ${i.potential}</div>`:''}<div class="idea-tags" style="margin-top:.6rem">${(i.tags||[]).map(t=>`<span class="idea-tag">${t}</span>`).join('')}</div>${renderScore(i)}</div>`).join('');
+}
+window.saveIdee = async () => {
+  const name=document.getElementById('i-name').value.trim();if(!name){toast('App-Namen eingeben','error');return;}
+  const item={id:S.nextId.idee++,name,desc:document.getElementById('i-desc').value,zielgruppe:document.getElementById('i-zielgruppe').value,status:document.getElementById('i-status').value,prio:document.getElementById('i-prio').value,potential:document.getElementById('i-potential').value,tags:document.getElementById('i-tags').value.split(',').map(t=>t.trim()).filter(Boolean),notes:document.getElementById('i-notes').value,createdAt:today()};
+  S.ideen.push(item);await fsSave('ideen',item);
+  closeModal('modal-idee');['i-name','i-desc','i-zielgruppe','i-potential','i-tags','i-notes'].forEach(x=>document.getElementById(x).value='');
+  renderIdeen();renderSidebarIdeas();toast('Idee gespeichert!','success');
+};
+window.delIdee = async (id) => { S.ideen=S.ideen.filter(i=>i.id!==id);await fsDelete('ideen',id);renderIdeen();renderSidebarIdeas();toast('Idee gelöscht'); };
+
+// ─── AUFTRÄGE ─────────────────────────────────────────
+function renderAuftraege() {
+  const q=(document.getElementById('auf-search').value||'').toLowerCase();
+  const f=document.getElementById('auf-filter').value;
+  const l=S.auftraege.filter(a=>(!f||a.status===f)&&(!q||a.titel.toLowerCase().includes(q)||a.kunde.toLowerCase().includes(q)));
+  const tb=document.getElementById('auf-tbody');
+  if(!l.length){tb.innerHTML='<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--muted)">Keine Aufträge</td></tr>';return;}
+  tb.innerHTML=l.map(a=>`<tr><td style="font-weight:500">${a.titel}</td><td>${a.kunde}</td><td>${badge(a.prio)}</td><td>${badge(a.status)}</td><td>${a.budget?fmt(a.budget):'—'}</td><td>${fmtDate(a.faellig)}</td><td><button class="btn-icon" onclick="delAuf(${a.id})">🗑</button></td></tr>`).join('');
+}
+window.saveAuf = async () => {
+  const titel=document.getElementById('a-titel').value.trim();if(!titel){toast('Titel eingeben','error');return;}
+  const item={id:S.nextId.auftrag++,titel,kunde:document.getElementById('a-kunde').value||'Intern',prio:document.getElementById('a-prio').value,status:document.getElementById('a-status').value,budget:parseFloat(document.getElementById('a-budget').value)||0,faellig:document.getElementById('a-faellig').value,desc:document.getElementById('a-desc').value};
+  S.auftraege.push(item);await fsSave('auftraege',item);
+  closeModal('modal-auftrag');['a-titel','a-kunde','a-budget','a-faellig','a-desc'].forEach(x=>document.getElementById(x).value='');
+  renderAuftraege();toast('Auftrag gespeichert!','success');
+  // Auto-generate tasks with AI
+  if(document.getElementById('auto-tasks-toggle')?.checked !== false) {
+    autoGenTasks(item);
+  }
+};
+window.delAuf = async (id) => { S.auftraege=S.auftraege.filter(a=>a.id!==id);await fsDelete('auftraege',id);renderAuftraege();toast('Auftrag gelöscht'); };
+
+// ─── PRODUKTE ─────────────────────────────────────────
+function renderProdukte() {
+  document.getElementById('prod-grid').innerHTML=S.produkte.map(p=>{const r=S.einnahmen.filter(e=>e.produktId==p.id).reduce((s,e)=>s+parseFloat(e.betrag||0),0);return`<div class="card" style="margin-bottom:0"><div class="card-header"><div><h3 style="margin-bottom:.2rem">${p.name}</h3><div style="font-size:.74rem;color:var(--muted)">${p.modell}</div></div><div style="display:flex;gap:.5rem;align-items:center">${badge(p.status)}<button class="btn-icon" onclick="delProd(${p.id})" style="font-size:.8rem">🗑</button></div></div><div class="card-body"><p style="font-size:.84rem;color:var(--muted);margin-bottom:1rem">${p.desc}</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem"><div class="acc-card" style="margin:0"><div class="label">PREIS/MONAT</div><div class="value blue" style="font-size:1.2rem">${p.preis?fmt(p.preis):'—'}</div></div><div class="acc-card" style="margin:0"><div class="label">EINMALPREIS</div><div class="value blue" style="font-size:1.2rem">${p.einmal?fmt(p.einmal):'—'}</div></div></div><div style="margin-top:.75rem;padding:.75rem;background:var(--dark3);border-radius:8px;display:flex;align-items:center;justify-content:space-between"><span style="font-size:.8rem;color:var(--muted)">Gesamteinnahmen</span><strong style="color:var(--green)">${fmt(r)}</strong></div></div></div>`;}).join('');
+}
+window.saveProd = async () => {
+  const name=document.getElementById('p-name').value.trim();if(!name){toast('Produktnamen eingeben','error');return;}
+  const item={id:S.nextId.produkt++,name,desc:document.getElementById('p-desc').value,preis:parseFloat(document.getElementById('p-preis').value)||0,einmal:parseFloat(document.getElementById('p-einmal').value)||0,status:document.getElementById('p-status').value,modell:document.getElementById('p-modell').value};
+  S.produkte.push(item);await fsSave('produkte',item);
+  closeModal('modal-produkt');['p-name','p-desc','p-preis','p-einmal'].forEach(x=>document.getElementById(x).value='');
+  renderProdukte();toast('Produkt gespeichert!','success');
+};
+window.delProd = async (id) => { S.produkte=S.produkte.filter(p=>p.id!==id);await fsDelete('produkte',id);renderProdukte();toast('Produkt gelöscht'); };
+
+// ─── EINNAHMEN ────────────────────────────────────────
+function renderEinnahmen() {
+  const fp=document.getElementById('ein-filter');fp.innerHTML='<option value="">Alle Produkte</option>';S.produkte.forEach(p=>fp.innerHTML+=`<option value="${p.id}">${p.name}</option>`);
+  const fv=fp.value;const l=S.einnahmen.filter(e=>!fv||e.produktId==fv).sort((a,b)=>b.datum.localeCompare(a.datum));
+  document.getElementById('ein-total').textContent=fmt(l.reduce((s,e)=>s+parseFloat(e.betrag||0),0));
+  const tb=document.getElementById('ein-tbody');if(!l.length){tb.innerHTML='<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--muted)">Keine Einnahmen</td></tr>';return;}
+  tb.innerHTML=l.map(e=>{const p=S.produkte.find(x=>x.id==e.produktId);return`<tr><td>${fmtDate(e.datum)}</td><td>${p?p.name:'—'}</td><td>${e.desc}</td><td style="color:var(--green);font-weight:600">${fmt(e.betrag)}</td><td><span class="badge badge-draft">${e.kanal}</span></td><td><button class="btn-icon" onclick="delEin(${e.id})" style="font-size:.8rem">🗑</button></td></tr>`;}).join('');
+}
+window.saveEin = async () => {
+  const b=parseFloat(document.getElementById('e-betrag').value);if(!b){toast('Betrag eingeben','error');return;}
+  const item={id:S.nextId.ein++,datum:document.getElementById('e-datum').value||today(),produktId:parseInt(document.getElementById('e-produkt').value)||null,desc:document.getElementById('e-desc').value,betrag:b,kanal:document.getElementById('e-kanal').value};
+  S.einnahmen.push(item);await fsSave('einnahmen',item);
+  closeModal('modal-einnahme');['e-betrag','e-desc'].forEach(x=>document.getElementById(x).value='');
+  renderEinnahmen();toast('Einnahme gespeichert!','success');
+};
+window.delEin = async (id) => { S.einnahmen=S.einnahmen.filter(e=>e.id!==id);await fsDelete('einnahmen',id);renderEinnahmen();toast('Einnahme gelöscht'); };
+
+// ─── AUSGABEN ─────────────────────────────────────────
+function renderAusgaben() {
+  const l=S.ausgaben.sort((a,b)=>b.datum.localeCompare(a.datum));
+  document.getElementById('aus-total').textContent=fmt(l.reduce((s,a)=>s+parseFloat(a.betrag||0),0));
+  const tb=document.getElementById('aus-tbody');if(!l.length){tb.innerHTML='<tr><td colspan="5" style="text-align:center;padding:2rem;color:var(--muted)">Keine Ausgaben</td></tr>';return;}
+  tb.innerHTML=l.map(a=>`<tr><td>${fmtDate(a.datum)}</td><td><span class="badge badge-draft">${a.kat}</span></td><td>${a.desc}${a.lief?` <span style="color:var(--muted);font-size:.78rem">— ${a.lief}</span>`:''}</td><td style="color:var(--red);font-weight:600">${fmt(a.betrag)}</td><td><button class="btn-icon" onclick="delAus(${a.id})" style="font-size:.8rem">🗑</button></td></tr>`).join('');
+}
+window.saveAus = async () => {
+  const b=parseFloat(document.getElementById('au-betrag').value);if(!b){toast('Betrag eingeben','error');return;}
+  const item={id:S.nextId.aus++,datum:document.getElementById('au-datum').value||today(),kat:document.getElementById('au-kat').value,desc:document.getElementById('au-desc').value,betrag:b,lief:document.getElementById('au-lief').value};
+  S.ausgaben.push(item);await fsSave('ausgaben',item);
+  closeModal('modal-ausgabe');['au-betrag','au-desc','au-lief'].forEach(x=>document.getElementById(x).value='');
+  renderAusgaben();toast('Ausgabe gespeichert!','success');
+};
+window.delAus = async (id) => { S.ausgaben=S.ausgaben.filter(a=>a.id!==id);await fsDelete('ausgaben',id);renderAusgaben();toast('Ausgabe gelöscht'); };
+
+// ─── ÜBERSICHT ────────────────────────────────────────
+window.switchAccTab = (tab, btn) => { ['monat','prod','mwst'].forEach(t=>document.getElementById('acc-'+t).style.display='none');document.getElementById('acc-'+tab).style.display='block';document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');({monat:renderAccMonat,prod:renderAccProd,mwst:renderAccMwst}[tab])(); };
+function renderUebersicht() { renderAccMonat(); }
+function renderAccMonat() {
+  const mo={};S.einnahmen.forEach(e=>{const m=e.datum.slice(0,7);if(!mo[m])mo[m]={e:0,a:0};mo[m].e+=parseFloat(e.betrag||0);});S.ausgaben.forEach(a=>{const m=a.datum.slice(0,7);if(!mo[m])mo[m]={e:0,a:0};mo[m].a+=parseFloat(a.betrag||0);});
+  const tE=S.einnahmen.reduce((s,e)=>s+parseFloat(e.betrag||0),0),tA=S.ausgaben.reduce((s,a)=>s+parseFloat(a.betrag||0),0);
+  let h=`<div class="accounting-summary"><div class="acc-card"><div class="label">TOTAL EINNAHMEN</div><div class="value green">${fmt(tE)}</div></div><div class="acc-card"><div class="label">TOTAL AUSGABEN</div><div class="value red">${fmt(tA)}</div></div><div class="acc-card"><div class="label">GEWINN</div><div class="value ${tE-tA>=0?'green':'red'}">${fmt(tE-tA)}</div></div></div>`;
+  h+=`<div class="card"><div class="card-header"><h3>Monatsübersicht</h3></div><div class="table-wrap"><table><thead><tr><th>MONAT</th><th>EINNAHMEN</th><th>AUSGABEN</th><th>ERGEBNIS</th></tr></thead><tbody>`;
+  Object.keys(mo).sort().forEach(m=>{const d=mo[m];const erg=d.e-d.a;h+=`<tr><td style="font-family:'Space Mono',monospace;font-size:.82rem">${m}</td><td style="color:var(--green)">${fmt(d.e)}</td><td style="color:var(--red)">${fmt(d.a)}</td><td style="color:${erg>=0?'var(--green)':'var(--red)'}">${fmt(erg)}</td></tr>`;});
+  if(!Object.keys(mo).length) h+='<tr><td colspan="4" style="text-align:center;padding:2rem;color:var(--muted)">Noch keine Daten</td></tr>';
+  h+='</tbody></table></div></div>';document.getElementById('acc-monat-content').innerHTML=h;
+}
+function renderAccProd() { document.getElementById('acc-prod-content').innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem">'+S.produkte.map(p=>{const r=S.einnahmen.filter(e=>e.produktId==p.id).reduce((s,e)=>s+parseFloat(e.betrag||0),0);return`<div class="acc-card"><div class="label">${p.name.toUpperCase()}</div><div class="value blue">${fmt(r)}</div><div style="font-size:.78rem;color:var(--muted);margin-top:.4rem">${S.einnahmen.filter(e=>e.produktId==p.id).length} Transaktionen · ${p.status}</div></div>`;}).join('')+'</div>'; }
+function renderAccMwst() { const tE=S.einnahmen.reduce((s,e)=>s+parseFloat(e.betrag||0),0);const mwst=tE-(tE/1.081);document.getElementById('acc-mwst-content').innerHTML=`<div class="accounting-summary"><div class="acc-card"><div class="label">NETTO</div><div class="value green">${fmt(tE-mwst)}</div></div><div class="acc-card"><div class="label">MWST 8.1%</div><div class="value red">${fmt(mwst)}</div></div><div class="acc-card"><div class="label">BRUTTO</div><div class="value blue">${fmt(tE)}</div></div></div><div class="card"><div class="card-header"><h3>MWST-Hinweis</h3></div><div class="card-body"><p style="font-size:.88rem;color:var(--muted);line-height:1.7">Vereinfachte Darstellung. Für die offizielle MWST-Abrechnung bitte Steuerberater konsultieren.<br><br><strong style="color:var(--text)">CH MWST-Satz: 8.1%</strong><br>Pflicht ab CHF 100'000 Jahresumsatz.</p></div></div>`; }
+
+// ─── KI BRAINSTORMING ─────────────────────────────────
+let chatHistory=[];
+const SYS='Du bist ein kreativer App-Ideen Berater für ZeroGen, ein Schweizer AI-Startup aus Kloten. ZeroGen entwickelt: HandwerkPro (CHF 149/Mo), PalettenTrack (CHF 199/Mo), Offertengenerator, Massarbeit ab CHF 4\'900. Hilf neue App-Ideen für den Schweizer KMU-Markt zu entwickeln. Antworte auf Deutsch, sei konkret und kreativ. Strukturiere Ideen mit: Name, Zielgruppe, Kernfunktionen, Marktpotential.';
+function renderSidebarIdeas(){const sb=document.getElementById('ideas-sb');if(!sb)return;if(!S.ideen.length){sb.innerHTML='<div style="padding:1.25rem;text-align:center;color:var(--muted);font-size:.8rem">Noch keine Ideen</div>';return;}sb.innerHTML=S.ideen.map(i=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:.4rem .75rem;border-bottom:1px solid rgba(255,255,255,.04)"><span style="font-size:.8rem;font-weight:500">${i.name}</span>${badge(i.status)}</div>`).join('');}
+window.clearChat=()=>{document.getElementById('chat-msgs').innerHTML='<div class="ai-msg"><div class="ai-avatar bot">✦</div><div class="ai-bubble bot">Chat geleert. Was möchtest du brainstormen?</div></div>';chatHistory=[];};
+window.suggest=(txt)=>{document.getElementById('chat-in').value=txt;window.chat();};
+window.chat=async()=>{const inp=document.getElementById('chat-in');const msg=inp.value.trim();if(!msg)return;inp.value='';addMsg(msg,'user');chatHistory.push({role:'user',parts:[{text:msg}]});const t=addTyping();try{const rep=await callKI(chatHistory,SYS);t.remove();addMsg(rep,'bot');chatHistory.push({role:'model',parts:[{text:rep}]});if(rep.toLowerCase().includes('app')||rep.toLowerCase().includes('idee'))addSaveBtn();}catch(e){t.remove();addMsg('⚠️ '+e.message,'bot');}};
+function addMsg(t,r){const c=document.getElementById('chat-msgs');const d=document.createElement('div');d.className='ai-msg '+(r==='user'?'user':'');d.innerHTML=`<div class="ai-avatar ${r==='bot'?'bot':'user'}">${r==='bot'?'✦':'👤'}</div><div class="ai-bubble ${r}" style="white-space:pre-wrap">${t}</div>`;c.appendChild(d);c.scrollTop=c.scrollHeight;return d;}
+function addTyping(){const c=document.getElementById('chat-msgs');const d=document.createElement('div');d.className='ai-msg';d.innerHTML='<div class="ai-avatar bot">✦</div><div class="ai-bubble bot"><div class="ai-typing"><span></span><span></span><span></span></div></div>';c.appendChild(d);c.scrollTop=c.scrollHeight;return d;}
+function addSaveBtn(){const c=document.getElementById('chat-msgs');const d=document.createElement('div');d.innerHTML='<div style="padding:.5rem 0 0 52px"><div class="ai-suggestions"><button class="ai-suggest-btn" onclick="chatSave()">💾 Als Idee speichern</button></div></div>';c.appendChild(d);c.scrollTop=c.scrollHeight;}
+window.chatSave=()=>{openModal('modal-idee');const l=chatHistory.filter(m=>m.role==='model').pop();if(l?.parts)document.getElementById('i-notes').value=l.parts[0].text.slice(0,500);};
+
+// ─── MASTER-PROMPT GENERATOR ──────────────────────────
+const PROMPT_SYS = `Du bist ein Experte für Prompt Engineering für Claude (Anthropic) und Claude Code.
+Deine Aufgabe: Analysiere die bisherige Brainstorming-Konversation und erstelle einen vollständigen, professionellen Master-Prompt auf Deutsch.
+
+Der Master-Prompt muss folgende Sektionen enthalten:
+1. PROJEKTNAME & VISION — Kurze, prägnante Beschreibung
+2. TECH STACK — Konkrete Technologieempfehlungen (Frontend, Backend, DB, Hosting)
+3. KERNFUNKTIONEN — Detaillierte Liste aller Features mit Beschreibung
+4. DATENMODELL — Wichtigste Entitäten und ihre Felder
+5. UI/UX ANFORDERUNGEN — Design-Vorgaben, Farben, Stil
+6. AUTHENTIFIZIERUNG & SICHERHEIT — Login-System, Rollen, Permissions
+7. INTEGRATIONS & APIS — Externe Services die benötigt werden
+8. SCHWEIZER BESONDERHEITEN — MWST, Sprache, Compliance
+9. CLAUDE CODE BEFEHL — Exakter Befehl den man in Claude Code eintippen kann
+10. ERSTE SCHRITTE — Priorisierte To-Do Liste für die Entwicklung
+
+Formatiere den Output so, dass man ihn direkt in claude.ai oder Claude Code kopieren kann.
+Beginne mit: "# MASTER-PROMPT: [APP-NAME]"
+Sei extrem detailliert und konkret. Keine vagen Beschreibungen.`;
+
+window.genMasterPrompt = async () => {
+  if (chatHistory.length < 2) {
+    toast('Erst eine Idee im Chat entwickeln, dann Prompt generieren!', 'error');
+    return;
+  }
+  const btn = document.getElementById('prompt-btn');
+  const origTxt = btn.innerHTML;
+  btn.innerHTML = '⏳ Generiere...';
+  btn.disabled = true;
+
+  // Build context from chat
+  const chatContext = chatHistory.map(m =>
+    (m.role === 'user' ? '👤 USER: ' : '🤖 KI: ') + m.parts[0].text
+  ).join('\n\n');
+
+  const requestMessages = [{
+    role: 'user',
+    parts: [{ text: `Hier ist unsere Brainstorming-Konversation:\n\n${chatContext}\n\nBitte erstelle jetzt den vollständigen Master-Prompt für diese App-Idee.` }]
+  }];
+
+  try {
+    const reply = await callKI(requestMessages, PROMPT_SYS);
+    btn.innerHTML = origTxt; btn.disabled = false;
+    showPromptModal(reply || 'Fehler beim Generieren.');
+  } catch(e) {
+    btn.innerHTML = origTxt; btn.disabled = false;
+    toast('Fehler: ' + e.message, 'error');
+  }
+};
+
+function showPromptModal(promptText) {
+  document.getElementById('prompt-output').value = promptText;
+  document.getElementById('prompt-charcount').textContent = promptText.length + ' Zeichen';
+  document.getElementById('modal-prompt').classList.add('open');
+}
+
+window.copyPrompt = () => {
+  const txt = document.getElementById('prompt-output').value;
+  navigator.clipboard.writeText(txt).then(() => {
+    toast('✓ Master-Prompt kopiert! Direkt in Claude einfügen.', 'success');
+  }).catch(() => {
+    document.getElementById('prompt-output').select();
+    document.execCommand('copy');
+    toast('✓ Kopiert!', 'success');
+  });
+};
+
+window.openClaudeAI = () => {
+  window.open('https://claude.ai', '_blank');
+  toast('Claude geöffnet — Prompt einfügen mit Ctrl+V', 'success');
+};
+
+window.savePromptAsIdee = async () => {
+  const prompt = document.getElementById('prompt-output').value;
+  const firstLine = prompt.split('\n')[0].replace(/^#\s*MASTER-PROMPT:\s*/i, '').trim();
+  const item = {
+    id: S.nextId.idee++,
+    name: firstLine || 'App aus Master-Prompt',
+    desc: 'Generiert via KI Brainstorming Master-Prompt Generator',
+    zielgruppe: '',
+    status: 'In Entwicklung',
+    prio: 'Hoch',
+    potential: '',
+    tags: ['Master-Prompt', 'Claude Code', 'KI-Generiert'],
+    notes: prompt.slice(0, 2000),
+    createdAt: today()
+  };
+  S.ideen.push(item);
+  await fsSave('ideen', item);
+  closeModal('modal-prompt');
+  renderSidebarIdeas();
+  toast('Prompt als Idee gespeichert!', 'success');
+};
+
+// ─── IDEEN-SCORING ────────────────────────────────────────────────────────────
+const SCORING_SYS = `Du bist ein App-Business-Analyst für ZeroGen, ein Schweizer AI-Startup.
+Bewerte die App-Idee nach folgenden Kriterien mit je 1-10 Punkten:
+1. Marktpotential_CH (wie gross ist der Schweizer Markt?)
+2. Entwicklungsaufwand (10=sehr einfach, 1=extrem komplex)
+3. ZeroGen_Fit (passt es zu bestehenden Produkten HandwerkPro/PalettenTrack?)
+4. Monetarisierung (wie gut lässt es sich vermarkten/verkaufen?)
+5. Wettbewerb (10=kaum Konkurrenz, 1=stark umkämpft)
+
+Antworte NUR als JSON ohne Markdown-Backticks:
+{"markt":7,"aufwand":6,"fit":8,"monetarisierung":7,"wettbewerb":5,"gesamt":6.6,"empfehlung":"Kurze 1-Satz Empfehlung","staerken":["Stärke 1","Stärke 2"],"risiken":["Risiko 1","Risiko 2"]}`;
+
+window.scoreIdee = async (id) => {
+  const idee = S.ideen.find(i=>i.id===id);
+  if (!idee) return;
+  const btn = document.getElementById('score-btn-'+id);
+  if (btn) { btn.innerHTML='⏳'; btn.disabled=true; }
+  const text = `App-Name: ${idee.name}\nBeschreibung: ${idee.desc||''}\nZielgruppe: ${idee.zielgruppe||''}\nPotential: ${idee.potential||''}\nTags: ${(idee.tags||[]).join(', ')}`;
+  try {
+    const _reply1 = await callKI([{role:'user',parts:[{text}]}], SCORING_SYS);
+    let score;
+    try { score = JSON.parse(_reply1.replace(/```json|```/g,'')); } catch(e) { toast('Score-Parse-Fehler','error'); return; }
+    idee.score = score;
+    await fsSave('ideen', idee);
+    renderIdeen();
+    toast(`✓ ${idee.name} bewertet — Gesamt: ${score.gesamt}/10`,'success');
+  } catch(e) { toast('Fehler: '+e.message,'error'); }
+  if (btn) { btn.innerHTML='⭐ Score'; btn.disabled=false; }
+};
+
+function renderScore(idee) {
+  if (!idee.score) return `<button id="score-btn-${idee.id}" class="ai-suggest-btn" onclick="scoreIdee(${idee.id})" style="margin-top:.75rem;font-size:.75rem">⭐ KI-Score</button>`;
+  const s = idee.score;
+  const bar = (v) => `<div style="height:4px;background:var(--dark);border-radius:2px;margin-top:.2rem"><div style="height:4px;border-radius:2px;background:var(--grad);width:${v*10}%"></div></div>`;
+  const col = s.gesamt>=7?'var(--green)':s.gesamt>=5?'#FCD34D':'var(--red)';
+  return `<div style="margin-top:.85rem;padding:.85rem;background:var(--dark);border-radius:8px;border:1px solid var(--border)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+      <span style="font-family:'Space Mono',monospace;font-size:.62rem;color:var(--muted)">KI-SCORE</span>
+      <span style="font-size:1.1rem;font-weight:700;color:${col}">${s.gesamt}/10</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem .75rem;font-size:.73rem;color:var(--muted)">
+      <div>Markt CH ${bar(s.markt)}</div><div>Entwicklung ${bar(s.aufwand)}</div>
+      <div>ZeroGen-Fit ${bar(s.fit)}</div><div>Monetarisierung ${bar(s.monetarisierung)}</div>
+      <div style="grid-column:1/-1">Wettbewerb ${bar(s.wettbewerb)}</div>
+    </div>
+    ${s.empfehlung?`<div style="margin-top:.6rem;font-size:.75rem;color:var(--cyan);line-height:1.4">💡 ${s.empfehlung}</div>`:''}
+    <button id="score-btn-${idee.id}" class="ai-suggest-btn" onclick="scoreIdee(${idee.id})" style="margin-top:.5rem;font-size:.7rem">↻ Neu bewerten</button>
+  </div>`;
+}
+
+// ─── KUNDEN ───────────────────────────────────────────────────────────────────
+function renderKunden() {
+  const q=(document.getElementById('kunden-search')||{value:''}).value.toLowerCase();
+  const list = S.kunden.filter(k=>!q||k.name.toLowerCase().includes(q)||k.firma.toLowerCase().includes(q));
+  const grid = document.getElementById('kunden-grid');
+  if (!list.length) { grid.innerHTML='<div class="empty-state" style="grid-column:1/-1"><div class="icon">👥</div><p>Noch keine Kunden erfasst.</p><button class="btn" onclick="openModal(\'modal-kunde\')">+ Ersten Kunden hinzufügen</button></div>'; return; }
+  grid.innerHTML = list.map(k => {
+    const umsatz = S.einnahmen.filter(e=>e.kundeId==k.id).reduce((s,e)=>s+parseFloat(e.betrag||0),0);
+    const offeneAuftraege = S.auftraege.filter(a=>a.kundeId==k.id&&a.status!=='Abgeschlossen').length;
+    const statusCol = k.status==='Aktiv'?'var(--green)':k.status==='Lead'?'#FCD34D':'var(--muted)';
+    return `<div class="card" style="margin-bottom:0">
+      <div class="card-header" style="padding:.9rem 1.1rem">
+        <div style="display:flex;flex-direction:column;gap:.2rem">
+          <div style="display:flex;align-items:center;gap:.6rem">
+            <div style="width:32px;height:32px;border-radius:50%;background:var(--grad);display:flex;align-items:center;justify-content:center;font-size:.9rem;font-weight:700;color:#fff;flex-shrink:0">${k.name[0].toUpperCase()}</div>
+            <div><div style="font-weight:600;font-size:.9rem">${k.name}</div><div style="font-size:.75rem;color:var(--muted)">${k.firma||'—'}</div></div>
+          </div>
+        </div>
+        <div style="display:flex;gap:.4rem;align-items:center">
+          <span style="font-size:.7rem;color:${statusCol};font-family:'Space Mono',monospace">${k.status}</span>
+          <button class="btn-icon" onclick="delKunde(${k.id})" style="font-size:.8rem">🗑</button>
+        </div>
+      </div>
+      <div class="card-body" style="padding:.85rem 1.1rem">
+        ${k.email?`<div style="font-size:.8rem;color:var(--muted);margin-bottom:.3rem">📧 ${k.email}</div>`:''}
+        ${k.tel?`<div style="font-size:.8rem;color:var(--muted);margin-bottom:.3rem">📞 ${k.tel}</div>`:''}
+        ${k.ort?`<div style="font-size:.8rem;color:var(--muted);margin-bottom:.6rem">📍 ${k.ort}</div>`:''}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-top:.5rem">
+          <div style="background:var(--dark3);border-radius:6px;padding:.5rem .75rem;text-align:center">
+            <div style="font-size:.62rem;color:var(--muted);font-family:'Space Mono',monospace">UMSATZ</div>
+            <div style="font-weight:700;color:var(--green);font-size:.9rem">${fmt(umsatz)}</div>
+          </div>
+          <div style="background:var(--dark3);border-radius:6px;padding:.5rem .75rem;text-align:center">
+            <div style="font-size:.62rem;color:var(--muted);font-family:'Space Mono',monospace">AUFTRÄGE</div>
+            <div style="font-weight:700;color:var(--cyan);font-size:.9rem">${offeneAuftraege}</div>
+          </div>
+        </div>
+        ${k.notizen?`<div style="margin-top:.65rem;font-size:.78rem;color:var(--muted);line-height:1.5;border-top:1px solid var(--border);padding-top:.65rem">${k.notizen}</div>`:''}
+        <div style="display:flex;gap:.5rem;margin-top:.75rem;flex-wrap:wrap">
+          <button id="analyse-btn-${k.id}" class="btn-ghost" style="flex:1;font-size:.72rem;padding:.35rem" onclick="kiKundenAnalyse(${k.id})">🔍 Analyse</button>
+          <button class="btn-ghost" style="flex:1;font-size:.72rem;padding:.35rem" onclick="openAngebot(${k.id})">📄 Angebot</button>
+          <button class="btn-ghost" style="flex:1;font-size:.72rem;padding:.35rem" onclick="openEmailAssistent('followup',null);document.getElementById('email-empfaenger').value='${k.email||''}'">✉ E-Mail</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.saveKunde = async () => {
+  const name = document.getElementById('k-name').value.trim();
+  if (!name) { toast('Name eingeben','error'); return; }
+  const item = {id:S.nextId.kunde++,name,firma:document.getElementById('k-firma').value,email:document.getElementById('k-email').value,tel:document.getElementById('k-tel').value,ort:document.getElementById('k-ort').value,status:document.getElementById('k-status').value,produkt:document.getElementById('k-produkt').value,notizen:document.getElementById('k-notizen').value,createdAt:today()};
+  S.kunden.push(item); await fsSave('kunden',item);
+  closeModal('modal-kunde');
+  ['k-name','k-firma','k-email','k-tel','k-ort','k-notizen'].forEach(x=>document.getElementById(x).value='');
+  renderKunden(); toast('Kunde gespeichert!','success');
+};
+window.delKunde = async (id) => { S.kunden=S.kunden.filter(k=>k.id!==id); await fsDelete('kunden',id); renderKunden(); toast('Kunde gelöscht'); };
+window.openNewAuftragForKunde = (kundeId) => {
+  const k = S.kunden.find(x=>x.id===kundeId);
+  openModal('modal-auftrag');
+  if (k) document.getElementById('a-kunde').value = k.firma||k.name;
+};
+
+// ─── ANGEBOTS-GENERATOR ───────────────────────────────────────────────────────
+window.openAngebot = (kundeId) => {
+  const k = S.kunden.find(x=>x.id===kundeId);
+  if (!k) return;
+  document.getElementById('ang-kunde-id').value = kundeId;
+  document.getElementById('ang-kunde-name').textContent = k.name + (k.firma?' — '+k.firma:'');
+  document.getElementById('ang-nr').value = 'ANG-' + new Date().getFullYear() + '-' + String(S.angebote.length+1).padStart(3,'0');
+  document.getElementById('ang-datum').value = today();
+  document.getElementById('ang-gueltig').value = new Date(Date.now()+30*864e5).toISOString().split('T')[0];
+  fillSel('ang-produkt');
+  // Reset positions
+  document.getElementById('ang-positionen').innerHTML = '';
+  addAngPosition();
+  openModal('modal-angebot');
+};
+
+window.addAngPosition = () => {
+  const container = document.getElementById('ang-positionen');
+  const idx = container.children.length;
+  const div = document.createElement('div');
+  div.className = 'ang-pos-row';
+  div.setAttribute('data-idx', idx);
+  div.innerHTML = `<div style="display:grid;grid-template-columns:2fr 60px 100px 28px;gap:.5rem;align-items:end;margin-bottom:.6rem">
+    <div class="form-group" style="margin:0"><label>BESCHREIBUNG</label><input type="text" placeholder="z.B. HandwerkPro Jahresabo" onchange="calcAngTotal()"></div>
+    <div class="form-group" style="margin:0"><label>MENGE</label><input type="number" value="1" min="1" onchange="calcAngTotal()"></div>
+    <div class="form-group" style="margin:0"><label>PREIS (CHF)</label><input type="number" placeholder="0.00" step="0.01" onchange="calcAngTotal()"></div>
+    <button class="btn-icon" onclick="this.closest('.ang-pos-row').remove();calcAngTotal()" style="margin-bottom:.1rem;font-size:1rem">✕</button>
+  </div>`;
+  container.appendChild(div);
+};
+
+window.calcAngTotal = () => {
+  let subtotal = 0;
+  document.querySelectorAll('.ang-pos-row').forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    const menge = parseFloat(inputs[1].value)||0;
+    const preis = parseFloat(inputs[2].value)||0;
+    subtotal += menge * preis;
+  });
+  const mwst = subtotal * 0.081;
+  document.getElementById('ang-subtotal').textContent = fmt(subtotal);
+  document.getElementById('ang-mwst').textContent = fmt(mwst);
+  document.getElementById('ang-total').textContent = fmt(subtotal + mwst);
+};
+
+window.generateAngebotPDF = () => {
+  const kundeId = parseInt(document.getElementById('ang-kunde-id').value);
+  const kunde = S.kunden.find(k=>k.id===kundeId);
+  const nr = document.getElementById('ang-nr').value;
+  const datum = document.getElementById('ang-datum').value;
+  const gueltig = document.getElementById('ang-gueltig').value;
+  const bemerkung = document.getElementById('ang-bemerkung').value;
+
+  const positionen = [];
+  document.querySelectorAll('.ang-pos-row').forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    const desc = inputs[0].value; const menge = parseFloat(inputs[1].value)||0; const preis = parseFloat(inputs[2].value)||0;
+    if (desc && preis) positionen.push({desc, menge, preis, total: menge*preis});
+  });
+  if (!positionen.length) { toast('Mindestens eine Position eingeben','error'); return; }
+
+  const subtotal = positionen.reduce((s,p)=>s+p.total,0);
+  const mwst = subtotal*0.081;
+  const total = subtotal+mwst;
+
+  const posHTML = positionen.map((p,i)=>`
+    <tr style="border-bottom:1px solid #e5e7eb">
+      <td style="padding:.6rem .5rem;font-size:.82rem">${i+1}</td>
+      <td style="padding:.6rem .5rem;font-size:.82rem">${p.desc}</td>
+      <td style="padding:.6rem .5rem;text-align:right;font-size:.82rem">${p.menge}</td>
+      <td style="padding:.6rem .5rem;text-align:right;font-size:.82rem">CHF ${p.preis.toFixed(2)}</td>
+      <td style="padding:.6rem .5rem;text-align:right;font-size:.82rem;font-weight:600">CHF ${p.total.toFixed(2)}</td>
+    </tr>`).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'DM Sans',sans-serif;color:#111;background:#fff;padding:48px;max-width:800px;margin:0 auto}
+    .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:48px;padding-bottom:24px;border-bottom:3px solid transparent;border-image:linear-gradient(135deg,#1A6FD4,#00C8E8) 1}
+    .logo-text{font-size:2rem;font-weight:300;color:#111}.logo-text strong{font-weight:800;background:linear-gradient(135deg,#1A6FD4,#00C8E8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+    .logo-sub{font-family:'Space Mono',monospace;font-size:.55rem;color:#9CA3AF;letter-spacing:.15em;margin-top:.2rem}
+    .ang-title{font-size:1.5rem;font-weight:700;color:#111;margin-bottom:.25rem}
+    .ang-nr{font-family:'Space Mono',monospace;font-size:.75rem;color:#6B7280}
+    .meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:36px}
+    .meta-box{background:#F9FAFB;border-radius:8px;padding:1rem 1.25rem}
+    .meta-label{font-family:'Space Mono',monospace;font-size:.58rem;color:#9CA3AF;letter-spacing:.1em;margin-bottom:.5rem}
+    .meta-val{font-size:.88rem;font-weight:500;color:#111;line-height:1.5}
+    table{width:100%;border-collapse:collapse;margin-bottom:24px}
+    thead tr{background:linear-gradient(135deg,#1A6FD4,#00C8E8)}
+    thead th{color:#fff;padding:.7rem .5rem;text-align:left;font-size:.72rem;font-family:'Space Mono',monospace;letter-spacing:.06em}
+    thead th:last-child,thead th:nth-child(3),thead th:nth-child(4){text-align:right}
+    .totals{margin-left:auto;width:260px;border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;margin-bottom:32px}
+    .totals-row{display:flex;justify-content:space-between;padding:.55rem 1rem;font-size:.85rem;border-bottom:1px solid #E5E7EB}
+    .totals-row:last-child{border-bottom:none;background:linear-gradient(135deg,#1A6FD4,#00C8E8);color:#fff;font-weight:700;font-size:.95rem;padding:.75rem 1rem}
+    .footer{margin-top:48px;padding-top:24px;border-top:1px solid #E5E7EB;font-size:.78rem;color:#9CA3AF;line-height:1.7;font-family:'Space Mono',monospace}
+    @media print{body{padding:32px}button{display:none}}
+  </style></head><body>
+  <div class="header">
+    <div>
+      <div class="logo-text">Zero<strong>Gen</strong></div>
+      <div class="logo-sub">AI SOFTWARE SOLUTIONS · KLOTEN, SCHWEIZ</div>
+    </div>
+    <div style="text-align:right">
+      <div class="ang-title">Angebot</div>
+      <div class="ang-nr">${nr}</div>
+    </div>
+  </div>
+  <div class="meta-grid">
+    <div class="meta-box">
+      <div class="meta-label">AN</div>
+      <div class="meta-val"><strong>${kunde?.name||'Kunde'}</strong><br>${kunde?.firma||''}<br>${kunde?.ort||''}<br>${kunde?.email||''}</div>
+    </div>
+    <div class="meta-box">
+      <div class="meta-label">DETAILS</div>
+      <div class="meta-val">Datum: ${fmtDate(datum)}<br>Gültig bis: ${fmtDate(gueltig)}<br>Währung: CHF<br>MWST: 8.1%</div>
+    </div>
+  </div>
+  <table>
+    <thead><tr><th>#</th><th>BESCHREIBUNG</th><th style="text-align:right">MENGE</th><th style="text-align:right">EINZELPREIS</th><th style="text-align:right">TOTAL</th></tr></thead>
+    <tbody>${posHTML}</tbody>
+  </table>
+  <div class="totals">
+    <div class="totals-row"><span>Subtotal</span><span>CHF ${subtotal.toFixed(2)}</span></div>
+    <div class="totals-row"><span>MWST 8.1%</span><span>CHF ${mwst.toFixed(2)}</span></div>
+    <div class="totals-row"><span>GESAMT</span><span>CHF ${total.toFixed(2)}</span></div>
+  </div>
+  ${bemerkung?`<div style="background:#F9FAFB;border-radius:8px;padding:1rem 1.25rem;margin-bottom:24px;font-size:.84rem;color:#374151;line-height:1.6"><strong style="font-size:.62rem;font-family:'Space Mono',monospace;color:#9CA3AF;letter-spacing:.1em">BEMERKUNGEN</strong><br><br>${bemerkung}</div>`:''}
+  <div class="footer">
+    ZeroGen · Kloten, Schweiz · Zahlungsfrist: 30 Tage netto<br>
+    Bei Fragen stehen wir Ihnen gerne zur Verfügung.
+  </div>
+  <div style="margin-top:24px;text-align:center">
+    <button onclick="window.print()" style="background:linear-gradient(135deg,#1A6FD4,#00C8E8);color:#fff;border:none;padding:.75rem 2rem;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">🖨 Als PDF speichern (Drucken → Als PDF)</button>
+  </div>
+  </body></html>`;
+
+  const win = window.open('','_blank','width=900,height=700');
+  win.document.write(html);
+  win.document.close();
+  closeModal('modal-angebot');
+  toast('Angebot geöffnet — "Als PDF speichern" im Druckdialog!','success');
+};
+
+// ─── MRR TRACKER ─────────────────────────────────────────────────────────────
+function renderMRR() {
+  // Calculate MRR per month from subscription revenues
+  const monatlich = {};
+  S.einnahmen.forEach(e => {
+    const m = (e.datum||'').slice(0,7); if (!m) return;
+    if (!monatlich[m]) monatlich[m] = 0;
+    monatlich[m] += parseFloat(e.betrag||0);
+  });
+  const months = Object.keys(monatlich).sort();
+  const values = months.map(m => monatlich[m]);
+
+  // Calculate MRR from active subscriptions
+  const mrrAbo = S.produkte.filter(p=>p.status==='Live'||p.status==='Beta').reduce((s,p)=>s+parseFloat(p.preis||0),0);
+  const thisMonth = today().slice(0,7);
+  const thisMonthRev = monatlich[thisMonth]||0;
+  const lastMonth = new Date(); lastMonth.setMonth(lastMonth.getMonth()-1);
+  const lmKey = lastMonth.toISOString().slice(0,7);
+  const lastMonthRev = monatlich[lmKey]||0;
+  const growth = lastMonthRev>0 ? ((thisMonthRev-lastMonthRev)/lastMonthRev*100).toFixed(1) : 0;
+  const arr = mrrAbo * 12;
+
+  // Build sparkline SVG
+  const maxVal = Math.max(...values, 1);
+  const W=460, H=80, pad=8;
+  const pts = months.map((m,i) => {
+    const x = pad + (i/(Math.max(months.length-1,1)))*(W-pad*2);
+    const y = H - pad - (monatlich[m]/maxVal)*(H-pad*2);
+    return `${x},${y}`;
+  });
+  const sparkline = months.length > 1 ? `
+    <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="width:100%;height:80px">
+      <defs><linearGradient id="spark-grad" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#1A6FD4"/><stop offset="100%" stop-color="#00C8E8"/></linearGradient>
+      <linearGradient id="area-grad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#00C8E8" stop-opacity=".25"/><stop offset="100%" stop-color="#00C8E8" stop-opacity="0"/></linearGradient></defs>
+      <polygon points="${pts.join(' ')} ${W-pad},${H} ${pad},${H}" fill="url(#area-grad)"/>
+      <polyline points="${pts.join(' ')}" fill="none" stroke="url(#spark-grad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      ${pts.map((p,i)=>`<circle cx="${p.split(',')[0]}" cy="${p.split(',')[1]}" r="3.5" fill="#00C8E8"/>`).join('')}
+    </svg>` : `<div style="text-align:center;padding:2rem;color:var(--muted);font-size:.82rem">Noch keine Daten für Kurve</div>`;
+
+  const tableRows = months.slice().reverse().map((m,i,arr) => {
+    const prev = arr[i+1]?monatlich[arr[i+1]]:null;
+    const diff = prev!==null ? monatlich[m]-prev : null;
+    return `<tr>
+      <td style="font-family:'Space Mono',monospace;font-size:.82rem">${m}</td>
+      <td style="color:var(--green);font-weight:600">${fmt(monatlich[m])}</td>
+      <td>${diff!==null?`<span style="color:${diff>=0?'var(--green)':'var(--red)'}">${diff>=0?'+':''}${fmt(diff)}</span>`:'—'}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('mrr-content').innerHTML = `
+    <div class="stats-grid" style="grid-template-columns:repeat(4,1fr)">
+      <div class="stat-card"><div class="stat-label">MRR POTENTIAL</div><div class="stat-val">${fmt(mrrAbo)}</div><div class="stat-change">Abo-Produkte aktiv</div></div>
+      <div class="stat-card"><div class="stat-label">DIESER MONAT</div><div class="stat-val">${fmt(thisMonthRev)}</div><div class="stat-change">${thisMonth}</div></div>
+      <div class="stat-card"><div class="stat-label">WACHSTUM</div><div class="stat-val" style="${growth>=0?'color:var(--green)':'color:var(--red)'}">${growth}%</div><div class="stat-change">vs. Vormonat</div></div>
+      <div class="stat-card"><div class="stat-label">ARR (HOCHRECHNUNG)</div><div class="stat-val">${fmt(arr)}</div><div class="stat-change">MRR × 12</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>Einnahmen-Verlauf</h3><span style="font-family:'Space Mono',monospace;font-size:.65rem;color:var(--muted)">${months.length} Monate</span></div>
+      <div class="card-body" style="padding:1.25rem 1.25rem .75rem">
+        <div style="display:flex;justify-content:space-between;font-family:'Space Mono',monospace;font-size:.62rem;color:var(--muted);margin-bottom:.4rem">
+          <span>${months[0]||'—'}</span><span>${months[months.length-1]||'—'}</span>
+        </div>
+        ${sparkline}
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>Monatliche Einnahmen</h3></div>
+      <div class="table-wrap"><table><thead><tr><th>MONAT</th><th>EINNAHMEN</th><th>VERÄNDERUNG</th></tr></thead><tbody>${tableRows||'<tr><td colspan="3" style="text-align:center;padding:2rem;color:var(--muted)">Noch keine Einnahmen erfasst</td></tr>'}</tbody></table></div>
+    </div>`;
+}
+
+
+// ══════════════════════════════════════════════════════
+// ANGEBOTS-TRACKING
+// ══════════════════════════════════════════════════════
+function renderAngebote() {
+  const list = S.angebote.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  const el = document.getElementById('angebote-content');
+  const stats = {
+    offen: S.angebote.filter(a=>a.status==='Offen').length,
+    gesendet: S.angebote.filter(a=>a.status==='Gesendet').length,
+    angenommen: S.angebote.filter(a=>a.status==='Angenommen').length,
+    abgelehnt: S.angebote.filter(a=>a.status==='Abgelehnt').length,
+    totalVol: S.angebote.filter(a=>a.status==='Angenommen').reduce((s,a)=>s+parseFloat(a.total||0),0)
+  };
+  const statusColor = {Offen:'#FCD34D',Gesendet:'var(--cyan)',Angenommen:'var(--green)',Abgelehnt:'var(--red)',Abgelaufen:'var(--muted)'};
+  const rows = list.map(a => {
+    const k = S.kunden.find(k=>k.id==a.kundeId);
+    return `<tr>
+      <td style="font-family:'Space Mono',monospace;font-size:.75rem">${a.nr||'—'}</td>
+      <td style="font-weight:500">${k?k.name:a.kundenName||'—'}</td>
+      <td>${fmtDate(a.datum)}</td>
+      <td>${fmtDate(a.gueltig)}</td>
+      <td style="font-weight:600;color:var(--green)">${fmt(a.total||0)}</td>
+      <td><select onchange="updateAngStatus(${a.id},this.value)" style="background:var(--dark3);border:1px solid var(--border);color:${statusColor[a.status]||'var(--text)'};border-radius:5px;padding:.2rem .5rem;font-size:.75rem;font-family:'Space Mono',monospace;cursor:pointer">
+        ${['Offen','Gesendet','Angenommen','Abgelehnt','Abgelaufen'].map(s=>`<option value="${s}" ${a.status===s?'selected':''}>${s}</option>`).join('')}
+      </select></td>
+      <td><button class="btn-icon" onclick="regenAngebotPDF(${a.id})" title="PDF">🖨</button>
+          <button class="btn-icon" onclick="openEmailAssistent('angebot',${a.id})" title="E-Mail">✉</button>
+          <button class="btn-icon" onclick="angToRechnung(${a.id})" title="Zu Rechnung" style="${a.status==='Angenommen'?'':'opacity:.3;pointer-events:none'}">🧾</button>
+          <button class="btn-icon" onclick="delAngebot(${a.id})">🗑</button></td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="stats-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:1.25rem">
+      <div class="stat-card"><div class="stat-label">OFFEN</div><div class="stat-val" style="font-size:1.4rem;color:#FCD34D">${stats.offen}</div></div>
+      <div class="stat-card"><div class="stat-label">GESENDET</div><div class="stat-val" style="font-size:1.4rem;color:var(--cyan)">${stats.gesendet}</div></div>
+      <div class="stat-card"><div class="stat-label">ANGENOMMEN</div><div class="stat-val" style="font-size:1.4rem;color:var(--green)">${stats.angenommen}</div></div>
+      <div class="stat-card"><div class="stat-label">ABGELEHNT</div><div class="stat-val" style="font-size:1.4rem;color:var(--red)">${stats.abgelehnt}</div></div>
+      <div class="stat-card"><div class="stat-label">GEWONNENES VOL.</div><div class="stat-val" style="font-size:1rem">${fmt(stats.totalVol)}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>Alle Angebote</h3><span style="font-size:.75rem;color:var(--muted)">${list.length} total</span></div>
+      <div class="table-wrap"><table><thead><tr><th>NR.</th><th>KUNDE</th><th>DATUM</th><th>GÜLTIG BIS</th><th>BETRAG</th><th>STATUS</th><th></th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--muted)">Noch keine Angebote. Erstelle das erste über die Kundenverwaltung.</td></tr>'}</tbody></table></div>
+    </div>`;
+}
+
+window.updateAngStatus = async (id, status) => {
+  const a = S.angebote.find(x=>x.id===id);
+  if (!a) return;
+  a.status = status;
+  await fsSave('angebote', a);
+  renderAngebote();
+  toast(`Angebot → ${status}`, status==='Angenommen'?'success':'');
+  if (status === 'Angenommen') {
+    setTimeout(()=>toast('💡 Tipp: Jetzt Rechnung generieren (🧾 Button)!', ''), 1200);
+  }
+};
+window.delAngebot = async (id) => { S.angebote=S.angebote.filter(a=>a.id!==id); await fsDelete('angebote',id); renderAngebote(); toast('Angebot gelöscht'); };
+
+// Save angebot to Firestore when PDF generated
+window._saveAngebotRecord = async (data) => {
+  const item = { id:S.nextId.angebot++, nr:data.nr, kundeId:data.kundeId, kundenName:data.kundenName, datum:data.datum, gueltig:data.gueltig, total:data.total, positionen:data.positionen, bemerkung:data.bemerkung, status:'Offen', createdAt:today() };
+  S.angebote.push(item);
+  await fsSave('angebote', item);
+  return item;
+};
+
+window.regenAngebotPDF = (id) => {
+  const a = S.angebote.find(x=>x.id===id);
+  if (!a) return;
+  const k = S.kunden.find(k=>k.id==a.kundeId);
+  _renderAngebotPDF(a, k);
+};
+
+// ══════════════════════════════════════════════════════
+// AUFGABEN / TO-DOS
+// ══════════════════════════════════════════════════════
+function renderTasks() {
+  const filter = document.getElementById('task-filter')?.value || '';
+  const aufId = document.getElementById('task-auf-filter')?.value || '';
+  let list = S.tasks.filter(t =>
+    (!filter || t.status === filter) &&
+    (!aufId || t.auftragId == aufId)
+  ).sort((a,b) => {
+    if (a.status==='Erledigt' && b.status!=='Erledigt') return 1;
+    if (a.status!=='Erledigt' && b.status==='Erledigt') return -1;
+    if (a.prio==='Hoch' && b.prio!=='Hoch') return -1;
+    return (a.faellig||'9').localeCompare(b.faellig||'9');
+  });
+
+  const offen = S.tasks.filter(t=>t.status!=='Erledigt').length;
+  const heute = S.tasks.filter(t=>t.faellig===today()&&t.status!=='Erledigt').length;
+  const ueberfaellig = S.tasks.filter(t=>t.faellig&&t.faellig<today()&&t.status!=='Erledigt').length;
+
+  const rows = list.map(t => {
+    const auf = S.auftraege.find(a=>a.id==t.auftragId);
+    const erledigt = t.status==='Erledigt';
+    const uebf = t.faellig && t.faellig < today() && !erledigt;
+    return `<tr style="${erledigt?'opacity:.45':''}">
+      <td><input type="checkbox" ${erledigt?'checked':''} onchange="toggleTask(${t.id})" style="cursor:pointer;accent-color:var(--cyan);width:16px;height:16px"></td>
+      <td style="font-weight:500;${erledigt?'text-decoration:line-through':''}">${t.titel}</td>
+      <td>${auf?`<span class="badge badge-draft" style="font-size:.65rem">${auf.titel.slice(0,22)}…</span>`:'—'}</td>
+      <td>${badge(t.prio)}</td>
+      <td style="color:${uebf?'var(--red)':t.faellig===today()?'#FCD34D':'var(--muted)'}">${t.faellig?fmtDate(t.faellig):'—'}${uebf?' ⚠':''}${t.faellig===today()&&!erledigt?' 🔔':''}</td>
+      <td><button class="btn-icon" onclick="delTask(${t.id})">🗑</button></td>
+    </tr>`;
+  }).join('');
+
+  // Fill auftrag filter
+  const aufSel = document.getElementById('task-auf-filter');
+  if (aufSel) { aufSel.innerHTML='<option value="">Alle Aufträge</option>'+S.auftraege.map(a=>`<option value="${a.id}">${a.titel}</option>`).join(''); }
+
+  document.getElementById('tasks-content').innerHTML = `
+    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:1.25rem">
+      <div class="stat-card"><div class="stat-label">OFFEN</div><div class="stat-val" style="font-size:1.4rem">${offen}</div></div>
+      <div class="stat-card"><div class="stat-label">HEUTE FÄLLIG</div><div class="stat-val" style="font-size:1.4rem;color:#FCD34D">${heute}</div></div>
+      <div class="stat-card"><div class="stat-label">ÜBERFÄLLIG</div><div class="stat-val" style="font-size:1.4rem;color:var(--red)">${ueberfaellig}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <h3>Aufgaben</h3>
+        <div style="display:flex;gap:.5rem">
+          <select id="task-filter" onchange="renderTasks()" style="font-size:.78rem;padding:.35rem .65rem;width:auto">
+            <option value="">Alle</option><option>Offen</option><option>In Arbeit</option><option>Erledigt</option>
+          </select>
+          <select id="task-auf-filter" onchange="renderTasks()" style="font-size:.78rem;padding:.35rem .65rem;width:auto">
+            <option value="">Alle Aufträge</option>
+          </select>
+          <button class="btn" onclick="openModal('modal-task')" style="padding:.4rem .85rem;font-size:.78rem">+ Aufgabe</button>
+        </div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th></th><th>AUFGABE</th><th>AUFTRAG</th><th>PRIORITÄT</th><th>FÄLLIG</th><th></th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--muted)">Keine Aufgaben. Los geht\'s! 💪</td></tr>'}</tbody></table></div>
+    </div>`;
+
+  // Re-attach filter listeners
+  const f1 = document.getElementById('task-filter');
+  const f2 = document.getElementById('task-auf-filter');
+  if (f1) { f1.value=filter; f1.onchange=renderTasks; }
+  if (f2) { f2.value=aufId; f2.innerHTML='<option value="">Alle Aufträge</option>'+S.auftraege.map(a=>`<option value="${a.id}">${a.titel}</option>`).join(''); f2.onchange=renderTasks; }
+}
+
+window.saveTask = async () => {
+  const titel = document.getElementById('t-titel').value.trim();
+  if (!titel) { toast('Titel eingeben','error'); return; }
+  const item = { id:S.nextId.task++, titel, auftragId:parseInt(document.getElementById('t-auftrag').value)||null, prio:document.getElementById('t-prio').value, status:'Offen', faellig:document.getElementById('t-faellig').value, notiz:document.getElementById('t-notiz').value, createdAt:today() };
+  S.tasks.push(item); await fsSave('tasks', item);
+  closeModal('modal-task');
+  ['t-titel','t-notiz','t-faellig'].forEach(x=>document.getElementById(x).value='');
+  renderTasks(); toast('Aufgabe gespeichert!','success');
+};
+window.toggleTask = async (id) => {
+  const t = S.tasks.find(x=>x.id===id);
+  if (!t) return;
+  t.status = t.status==='Erledigt' ? 'Offen' : 'Erledigt';
+  await fsSave('tasks', t);
+  renderTasks();
+  if (t.status==='Erledigt') toast('✓ Erledigt! 🎉','success');
+};
+window.delTask = async (id) => { S.tasks=S.tasks.filter(t=>t.id!==id); await fsDelete('tasks',id); renderTasks(); toast('Aufgabe gelöscht'); };
+
+// ══════════════════════════════════════════════════════
+// RECHNUNGS-GENERATOR
+// ══════════════════════════════════════════════════════
+function renderRechnungen() {
+  const list = S.rechnungen.sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  const offen = S.rechnungen.filter(r=>r.status==='Offen'||r.status==='Gesendet');
+  const totalOffen = offen.reduce((s,r)=>s+parseFloat(r.total||0),0);
+  const ueberfaellig = S.rechnungen.filter(r=>r.faellig&&r.faellig<today()&&r.status!=='Bezahlt'&&r.status!=='Storniert');
+
+  const statusColor = {Offen:'#FCD34D',Gesendet:'var(--cyan)',Bezahlt:'var(--green)',Überfällig:'var(--red)',Storniert:'var(--muted)'};
+  const rows = list.map(r => {
+    const k = S.kunden.find(k=>k.id==r.kundeId);
+    const uebf = r.faellig && r.faellig < today() && r.status!=='Bezahlt' && r.status!=='Storniert';
+    const displayStatus = uebf && r.status!=='Bezahlt' ? 'Überfällig' : r.status;
+    return `<tr>
+      <td style="font-family:'Space Mono',monospace;font-size:.75rem">${r.nr||'—'}</td>
+      <td style="font-weight:500">${k?k.name:r.kundenName||'—'}</td>
+      <td>${fmtDate(r.datum)}</td>
+      <td style="color:${uebf?'var(--red)':'var(--muted)'}">${fmtDate(r.faellig)}${uebf?' ⚠':''}</td>
+      <td style="font-weight:700;color:var(--green)">${fmt(r.total||0)}</td>
+      <td><select onchange="updateRechStatus(${r.id},this.value)" style="background:var(--dark3);border:1px solid var(--border);color:${statusColor[displayStatus]||'var(--text)'};border-radius:5px;padding:.2rem .5rem;font-size:.75rem;font-family:'Space Mono',monospace;cursor:pointer">
+        ${['Offen','Gesendet','Bezahlt','Storniert'].map(s=>`<option value="${s}" ${r.status===s?'selected':''}>${s}</option>`).join('')}
+      </select></td>
+      <td><button class="btn-icon" onclick="regenRechnungPDF(${r.id})" title="PDF">🖨</button>
+          <button class="btn-icon" onclick="openEmailAssistent('rechnung',${r.id})" title="E-Mail">✉</button>
+          <button class="btn-icon" onclick="buchRechnungEin(${r.id})" title="Als Einnahme buchen" style="${r.status==='Bezahlt'&&!r.gebucht?'':'opacity:.3;pointer-events:none'}">💰</button>
+          <button class="btn-icon" onclick="delRechnung(${r.id})">🗑</button></td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('rechnungen-content').innerHTML = `
+    <div style="display:flex;gap:.75rem;margin-bottom:1.25rem">
+      <button class="btn" onclick="openNeueRechnung()">+ Neue Rechnung</button>
+    </div>
+    <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:1.25rem">
+      <div class="stat-card"><div class="stat-label">TOTAL</div><div class="stat-val" style="font-size:1.3rem">${list.length}</div></div>
+      <div class="stat-card"><div class="stat-label">OFFEN/GESENDET</div><div class="stat-val" style="font-size:1rem;color:#FCD34D">${fmt(totalOffen)}</div></div>
+      <div class="stat-card"><div class="stat-label">ÜBERFÄLLIG</div><div class="stat-val" style="font-size:1.4rem;color:var(--red)">${ueberfaellig.length}</div></div>
+      <div class="stat-card"><div class="stat-label">BEZAHLT</div><div class="stat-val" style="font-size:1rem;color:var(--green)">${fmt(S.rechnungen.filter(r=>r.status==='Bezahlt').reduce((s,r)=>s+parseFloat(r.total||0),0))}</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>Rechnungen</h3></div>
+      <div class="table-wrap"><table><thead><tr><th>NR.</th><th>KUNDE</th><th>DATUM</th><th>FÄLLIG</th><th>BETRAG</th><th>STATUS</th><th></th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--muted)">Noch keine Rechnungen.</td></tr>'}</tbody></table></div>
+    </div>`;
+}
+
+window.updateRechStatus = async (id, status) => {
+  const r = S.rechnungen.find(x=>x.id===id);
+  if (!r) return;
+  r.status = status;
+  await fsSave('rechnungen', r);
+  renderRechnungen();
+  toast(`Rechnung → ${status}`, status==='Bezahlt'?'success':'');
+  if (status==='Bezahlt') setTimeout(()=>toast('💰 Tipp: Als Einnahme buchen (💰 Button)!',''),1200);
+};
+
+window.buchRechnungEin = async (id) => {
+  const r = S.rechnungen.find(x=>x.id===id);
+  if (!r || r.gebucht) return;
+  const prod = S.produkte[0];
+  const item = { id:S.nextId.ein++, datum:today(), produktId:prod?.id||null, desc:`Rechnung ${r.nr} — ${r.kundenName||'Kunde'}`, betrag:r.total, kanal:'Rechnung' };
+  S.einnahmen.push(item); await fsSave('einnahmen', item);
+  r.gebucht = true; await fsSave('rechnungen', r);
+  renderRechnungen(); toast('✓ Als Einnahme gebucht!','success');
+};
+
+window.openNeueRechnung = () => {
+  document.getElementById('rech-kunde-id').value = '';
+  document.getElementById('rech-kunde-name').textContent = '— Kunden wählen —';
+  const kSel = document.getElementById('rech-kunde-sel');
+  kSel.innerHTML = '<option value="">— Kunde wählen —</option>' + S.kunden.map(k=>`<option value="${k.id}">${k.name}${k.firma?' — '+k.firma:''}</option>`).join('');
+  kSel.onchange = () => {
+    const k = S.kunden.find(x=>x.id==kSel.value);
+    if (k) { document.getElementById('rech-kunde-id').value=k.id; document.getElementById('rech-kunde-name').textContent=k.name+(k.firma?' — '+k.firma:''); }
+  };
+  document.getElementById('rech-nr').value = 'RE-'+new Date().getFullYear()+'-'+String(S.rechnungen.length+1).padStart(3,'0');
+  document.getElementById('rech-datum').value = today();
+  const faellig = new Date(); faellig.setDate(faellig.getDate()+30);
+  document.getElementById('rech-faellig').value = faellig.toISOString().split('T')[0];
+  document.getElementById('rech-positionen').innerHTML=''; addRechPosition();
+  openModal('modal-rechnung');
+};
+
+window.angToRechnung = async (angId) => {
+  const a = S.angebote.find(x=>x.id===angId);
+  if (!a) return;
+  const k = S.kunden.find(k=>k.id==a.kundeId);
+  document.getElementById('rech-kunde-id').value = a.kundeId||'';
+  document.getElementById('rech-kunde-name').textContent = k?k.name+(k.firma?' — '+k.firma:''):a.kundenName||'—';
+  const kSel = document.getElementById('rech-kunde-sel');
+  kSel.innerHTML = '<option value="">— Kunde wählen —</option>' + S.kunden.map(kx=>`<option value="${kx.id}" ${kx.id==a.kundeId?'selected':''}>${kx.name}${kx.firma?' — '+kx.firma:''}</option>`).join('');
+  document.getElementById('rech-nr').value = 'RE-'+new Date().getFullYear()+'-'+String(S.rechnungen.length+1).padStart(3,'0');
+  document.getElementById('rech-datum').value = today();
+  const faellig = new Date(); faellig.setDate(faellig.getDate()+30);
+  document.getElementById('rech-faellig').value = faellig.toISOString().split('T')[0];
+  document.getElementById('rech-ref-ang').value = a.nr||'';
+  const pos = document.getElementById('rech-positionen'); pos.innerHTML='';
+  (a.positionen||[]).forEach(p => { addRechPosition(p.desc, p.menge, p.preis); });
+  if (!(a.positionen||[]).length) addRechPosition();
+  document.getElementById('rech-bemerkung').value = `Referenz: Angebot ${a.nr||''}`;
+  calcRechTotal();
+  openModal('modal-rechnung');
+};
+
+window.addRechPosition = (desc='', menge=1, preis=0) => {
+  const container = document.getElementById('rech-positionen');
+  const div = document.createElement('div'); div.className='ang-pos-row';
+  div.innerHTML = `<div style="display:grid;grid-template-columns:2fr 60px 100px 28px;gap:.5rem;align-items:end;margin-bottom:.6rem">
+    <div class="form-group" style="margin:0"><label>BESCHREIBUNG</label><input type="text" value="${desc}" placeholder="z.B. Entwicklung Phase 1" onchange="calcRechTotal()"></div>
+    <div class="form-group" style="margin:0"><label>MENGE</label><input type="number" value="${menge}" min="1" onchange="calcRechTotal()"></div>
+    <div class="form-group" style="margin:0"><label>PREIS (CHF)</label><input type="number" value="${preis||''}" placeholder="0.00" step="0.01" onchange="calcRechTotal()"></div>
+    <button class="btn-icon" onclick="this.closest('.ang-pos-row').remove();calcRechTotal()" style="margin-bottom:.1rem;font-size:1rem">✕</button>
+  </div>`;
+  container.appendChild(div); calcRechTotal();
+};
+
+window.calcRechTotal = () => {
+  let sub=0;
+  document.querySelectorAll('#rech-positionen .ang-pos-row').forEach(row=>{
+    const inp=row.querySelectorAll('input'); sub+=( parseFloat(inp[1].value)||0)*(parseFloat(inp[2].value)||0);
+  });
+  const mwst=sub*0.081;
+  document.getElementById('rech-subtotal').textContent=fmt(sub);
+  document.getElementById('rech-mwst').textContent=fmt(mwst);
+  document.getElementById('rech-total-disp').textContent=fmt(sub+mwst);
+};
+
+window.generateRechnungPDF = async () => {
+  const kundeId = parseInt(document.getElementById('rech-kunde-id').value)||null;
+  const kunde = S.kunden.find(k=>k.id===kundeId);
+  const nr = document.getElementById('rech-nr').value;
+  const datum = document.getElementById('rech-datum').value;
+  const faellig = document.getElementById('rech-faellig').value;
+  const refAng = document.getElementById('rech-ref-ang').value;
+  const bemerkung = document.getElementById('rech-bemerkung').value;
+
+  const positionen=[];
+  document.querySelectorAll('#rech-positionen .ang-pos-row').forEach(row=>{
+    const inp=row.querySelectorAll('input');
+    const desc=inp[0].value, menge=parseFloat(inp[1].value)||0, preis=parseFloat(inp[2].value)||0;
+    if(desc&&preis) positionen.push({desc,menge,preis,total:menge*preis});
+  });
+  if(!positionen.length){toast('Mindestens eine Position eingeben','error');return;}
+
+  const subtotal=positionen.reduce((s,p)=>s+p.total,0);
+  const mwst=subtotal*0.081; const total=subtotal+mwst;
+
+  // Save to Firestore
+  const item={id:S.nextId.rechnung++,nr,kundeId,kundenName:kunde?.name||(document.getElementById('rech-kunde-name').textContent),datum,faellig,total,positionen,bemerkung,refAng,status:'Offen',gebucht:false,createdAt:today()};
+  S.rechnungen.push(item); await fsSave('rechnungen',item);
+
+  _renderRechnungPDF(item, kunde);
+  closeModal('modal-rechnung');
+  toast('Rechnung gespeichert & PDF geöffnet!','success');
+};
+
+window.regenRechnungPDF = (id) => {
+  const r = S.rechnungen.find(x=>x.id===id);
+  const k = S.kunden.find(k=>k.id==r?.kundeId);
+  if (r) _renderRechnungPDF(r, k);
+};
+
+window.delRechnung = async (id) => { S.rechnungen=S.rechnungen.filter(r=>r.id!==id); await fsDelete('rechnungen',id); renderRechnungen(); toast('Rechnung gelöscht'); };
+
+function _renderRechnungPDF(r, kunde) {
+  const posHTML = (r.positionen||[]).map((p,i)=>`<tr style="border-bottom:1px solid #e5e7eb"><td style="padding:.6rem .5rem;font-size:.82rem">${i+1}</td><td style="padding:.6rem .5rem;font-size:.82rem">${p.desc}</td><td style="padding:.6rem .5rem;text-align:right;font-size:.82rem">${p.menge}</td><td style="padding:.6rem .5rem;text-align:right;font-size:.82rem">CHF ${parseFloat(p.preis).toFixed(2)}</td><td style="padding:.6rem .5rem;text-align:right;font-size:.82rem;font-weight:600">CHF ${parseFloat(p.total).toFixed(2)}</td></tr>`).join('');
+  const sub = (r.positionen||[]).reduce((s,p)=>s+parseFloat(p.total||0),0);
+  const mwst=sub*0.081; const total=sub+mwst;
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8">
+  <style>@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');*{margin:0;padding:0;box-sizing:border-box}body{font-family:'DM Sans',sans-serif;color:#111;background:#fff;padding:48px;max-width:800px;margin:0 auto}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:48px;padding-bottom:24px;border-bottom:3px solid transparent;border-image:linear-gradient(135deg,#1A6FD4,#00C8E8) 1}.logo-text{font-size:2rem;font-weight:300}.logo-text strong{font-weight:800;background:linear-gradient(135deg,#1A6FD4,#00C8E8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.logo-sub{font-family:'Space Mono',monospace;font-size:.55rem;color:#9CA3AF;letter-spacing:.15em;margin-top:.2rem}.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:36px}.meta-box{background:#F9FAFB;border-radius:8px;padding:1rem 1.25rem}.meta-label{font-family:'Space Mono',monospace;font-size:.58rem;color:#9CA3AF;letter-spacing:.1em;margin-bottom:.5rem}.meta-val{font-size:.88rem;font-weight:500;color:#111;line-height:1.5}table{width:100%;border-collapse:collapse;margin-bottom:24px}thead tr{background:linear-gradient(135deg,#1A6FD4,#00C8E8)}thead th{color:#fff;padding:.7rem .5rem;text-align:left;font-size:.72rem;font-family:'Space Mono',monospace;letter-spacing:.06em}thead th:last-child,thead th:nth-child(3),thead th:nth-child(4){text-align:right}.totals{margin-left:auto;width:260px;border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;margin-bottom:32px}.totals-row{display:flex;justify-content:space-between;padding:.55rem 1rem;font-size:.85rem;border-bottom:1px solid #E5E7EB}.totals-row:last-child{border-bottom:none;background:linear-gradient(135deg,#1A6FD4,#00C8E8);color:#fff;font-weight:700;font-size:.95rem;padding:.75rem 1rem}.footer{margin-top:48px;padding-top:24px;border-top:1px solid #E5E7EB;font-size:.78rem;color:#9CA3AF;line-height:1.7;font-family:'Space Mono',monospace}@media print{button{display:none}}</style></head><body>
+  <div class="header"><div><div class="logo-text">Zero<strong>Gen</strong></div><div class="logo-sub">AI SOFTWARE SOLUTIONS · KLOTEN, SCHWEIZ</div></div><div style="text-align:right"><div style="font-size:1.5rem;font-weight:700">Rechnung</div><div style="font-family:'Space Mono',monospace;font-size:.75rem;color:#6B7280">${r.nr}</div>${r.refAng?`<div style="font-size:.72rem;color:#9CA3AF;margin-top:.2rem">Ref: Angebot ${r.refAng}</div>`:''}</div></div>
+  <div class="meta-grid"><div class="meta-box"><div class="meta-label">AN</div><div class="meta-val"><strong>${kunde?.name||r.kundenName||'Kunde'}</strong><br>${kunde?.firma||''}<br>${kunde?.ort||''}<br>${kunde?.email||''}</div></div><div class="meta-box"><div class="meta-label">DETAILS</div><div class="meta-val">Datum: ${fmtDate(r.datum)}<br>Fällig: <strong style="color:#DC2626">${fmtDate(r.faellig)}</strong><br>Währung: CHF<br>MWST: 8.1%</div></div></div>
+  <table><thead><tr><th>#</th><th>BESCHREIBUNG</th><th style="text-align:right">MENGE</th><th style="text-align:right">PREIS</th><th style="text-align:right">TOTAL</th></tr></thead><tbody>${posHTML}</tbody></table>
+  <div class="totals"><div class="totals-row"><span>Subtotal</span><span>CHF ${sub.toFixed(2)}</span></div><div class="totals-row"><span>MWST 8.1%</span><span>CHF ${mwst.toFixed(2)}</span></div><div class="totals-row"><span>GESAMT</span><span>CHF ${total.toFixed(2)}</span></div></div>
+  ${r.bemerkung?`<div style="background:#F9FAFB;border-radius:8px;padding:1rem 1.25rem;margin-bottom:24px;font-size:.84rem;color:#374151;line-height:1.6"><strong style="font-size:.62rem;font-family:'Space Mono',monospace;color:#9CA3AF;letter-spacing:.1em">BEMERKUNGEN</strong><br><br>${r.bemerkung}</div>`:''}
+  <div class="footer">ZeroGen · Kloten, Schweiz<br>Bitte überweisen Sie den Betrag bis ${fmtDate(r.faellig)} auf unser Konto.<br>Bei Fragen: kontakt@zerogen.ch</div>
+  <div style="margin-top:24px;text-align:center"><button onclick="window.print()" style="background:linear-gradient(135deg,#1A6FD4,#00C8E8);color:#fff;border:none;padding:.75rem 2rem;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">🖨 Als PDF speichern</button></div>
+  </body></html>`;
+  const win=window.open('','_blank','width=900,height=700'); win.document.write(html); win.document.close();
+}
+
+// Patch generateAngebotPDF to also save record
+const _origAngPDF = window.generateAngebotPDF;
+window.generateAngebotPDF = async function() {
+  const kundeId = parseInt(document.getElementById('ang-kunde-id').value)||null;
+  const kunde = S.kunden.find(k=>k.id===kundeId);
+  const positionen=[];
+  document.querySelectorAll('#ang-positionen .ang-pos-row').forEach(row=>{
+    const inp=row.querySelectorAll('input');
+    const desc=inp[0].value,menge=parseFloat(inp[1].value)||0,preis=parseFloat(inp[2].value)||0;
+    if(desc&&preis) positionen.push({desc,menge,preis,total:menge*preis});
+  });
+  if(!positionen.length){toast('Mindestens eine Position eingeben','error');return;}
+  const sub=positionen.reduce((s,p)=>s+p.total,0); const total=sub+(sub*0.081);
+  const rec = await window._saveAngebotRecord({nr:document.getElementById('ang-nr').value,kundeId,kundenName:kunde?.name||'',datum:document.getElementById('ang-datum').value,gueltig:document.getElementById('ang-gueltig').value,total,positionen,bemerkung:document.getElementById('ang-bemerkung').value});
+  _origAngPDF();
+};
+
+window._renderAngebotPDF = (a, k) => {
+  // Trigger original PDF logic with saved data
+  document.getElementById('ang-kunde-id').value = a.kundeId||'';
+  document.getElementById('ang-nr').value = a.nr||'';
+  document.getElementById('ang-datum').value = a.datum||'';
+  document.getElementById('ang-gueltig').value = a.gueltig||'';
+  document.getElementById('ang-bemerkung').value = a.bemerkung||'';
+  const pos = document.getElementById('ang-positionen'); pos.innerHTML='';
+  (a.positionen||[]).forEach(p=>{ addAngPosition(); const rows=pos.querySelectorAll('.ang-pos-row'); const last=rows[rows.length-1]; const inp=last.querySelectorAll('input'); inp[0].value=p.desc; inp[1].value=p.menge; inp[2].value=p.preis; });
+  // Generate without re-saving
+  const posHTML=(a.positionen||[]).map((p,i)=>`<tr style="border-bottom:1px solid #e5e7eb"><td style="padding:.6rem .5rem;font-size:.82rem">${i+1}</td><td style="padding:.6rem .5rem;font-size:.82rem">${p.desc}</td><td style="padding:.6rem .5rem;text-align:right;font-size:.82rem">${p.menge}</td><td style="padding:.6rem .5rem;text-align:right;font-size:.82rem">CHF ${parseFloat(p.preis).toFixed(2)}</td><td style="padding:.6rem .5rem;text-align:right;font-size:.82rem;font-weight:600">CHF ${parseFloat(p.total).toFixed(2)}</td></tr>`).join('');
+  const sub=(a.positionen||[]).reduce((s,p)=>s+parseFloat(p.total||0),0); const mwst=sub*0.081; const total=sub+mwst;
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;600;700&family=Space+Mono:wght@400&display=swap');*{margin:0;padding:0;box-sizing:border-box}body{font-family:'DM Sans',sans-serif;color:#111;padding:48px;max-width:800px;margin:0 auto}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:48px;padding-bottom:24px;border-bottom:3px solid transparent;border-image:linear-gradient(135deg,#1A6FD4,#00C8E8) 1}.logo-text{font-size:2rem;font-weight:300}.logo-text strong{font-weight:800;background:linear-gradient(135deg,#1A6FD4,#00C8E8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}table{width:100%;border-collapse:collapse;margin-bottom:24px}thead tr{background:linear-gradient(135deg,#1A6FD4,#00C8E8)}thead th{color:#fff;padding:.7rem .5rem;text-align:left;font-size:.72rem;font-family:'Space Mono',monospace}thead th:last-child,thead th:nth-child(3),thead th:nth-child(4){text-align:right}.totals{margin-left:auto;width:260px;border:1px solid #E5E7EB;border-radius:8px;overflow:hidden;margin-bottom:32px}.totals-row{display:flex;justify-content:space-between;padding:.55rem 1rem;font-size:.85rem;border-bottom:1px solid #E5E7EB}.totals-row:last-child{border-bottom:none;background:linear-gradient(135deg,#1A6FD4,#00C8E8);color:#fff;font-weight:700;padding:.75rem 1rem}@media print{button{display:none}}</style></head><body>
+  <div class="header"><div><div class="logo-text">Zero<strong>Gen</strong></div><div style="font-family:'Space Mono',monospace;font-size:.55rem;color:#9CA3AF;letter-spacing:.15em;margin-top:.2rem">AI SOFTWARE SOLUTIONS · KLOTEN</div></div><div style="text-align:right"><div style="font-size:1.5rem;font-weight:700">Angebot</div><div style="font-family:'Space Mono',monospace;font-size:.75rem;color:#6B7280">${a.nr}</div></div></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:36px"><div style="background:#F9FAFB;border-radius:8px;padding:1rem 1.25rem"><div style="font-family:'Space Mono',monospace;font-size:.58rem;color:#9CA3AF;letter-spacing:.1em;margin-bottom:.5rem">AN</div><div style="font-size:.88rem;font-weight:500;line-height:1.5"><strong>${k?.name||'Kunde'}</strong><br>${k?.firma||''}<br>${k?.ort||''}</div></div><div style="background:#F9FAFB;border-radius:8px;padding:1rem 1.25rem"><div style="font-family:'Space Mono',monospace;font-size:.58rem;color:#9CA3AF;letter-spacing:.1em;margin-bottom:.5rem">DETAILS</div><div style="font-size:.88rem;font-weight:500;line-height:1.5">Datum: ${fmtDate(a.datum)}<br>Gültig bis: ${fmtDate(a.gueltig)}<br>MWST: 8.1%</div></div></div>
+  <table><thead><tr><th>#</th><th>BESCHREIBUNG</th><th style="text-align:right">MENGE</th><th style="text-align:right">PREIS</th><th style="text-align:right">TOTAL</th></tr></thead><tbody>${posHTML}</tbody></table>
+  <div class="totals"><div class="totals-row"><span>Subtotal</span><span>CHF ${sub.toFixed(2)}</span></div><div class="totals-row"><span>MWST 8.1%</span><span>CHF ${mwst.toFixed(2)}</span></div><div class="totals-row"><span>GESAMT</span><span>CHF ${total.toFixed(2)}</span></div></div>
+  ${a.bemerkung?`<div style="background:#F9FAFB;border-radius:8px;padding:1rem;margin-bottom:24px;font-size:.84rem;color:#374151">${a.bemerkung}</div>`:''}
+  <div style="margin-top:24px;text-align:center"><button onclick="window.print()" style="background:linear-gradient(135deg,#1A6FD4,#00C8E8);color:#fff;border:none;padding:.75rem 2rem;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer">🖨 Als PDF speichern</button></div>
+  </body></html>`;
+  const win=window.open('','_blank','width=900,height=700'); win.document.write(html); win.document.close();
+};
+
+// ══════════════════════════════════════════════════════
+// ZIELE / OKRs
+// ══════════════════════════════════════════════════════
+function renderOKRs() {
+  const el = document.getElementById('okrs-content');
+  const totalEin = S.einnahmen.reduce((s,e)=>s+parseFloat(e.betrag||0),0);
+  const thisMonthRev = S.einnahmen.filter(e=>e.datum&&e.datum.startsWith(today().slice(0,7))).reduce((s,e)=>s+parseFloat(e.betrag||0),0);
+  const mrrPot = S.produkte.filter(p=>p.status==='Live'||p.status==='Beta').reduce((s,p)=>s+parseFloat(p.preis||0),0);
+
+  const okrCards = S.okrs.map(okr => {
+    const progress = Math.min(100, Math.round((parseFloat(okr.aktuell||0)/parseFloat(okr.ziel||1))*100));
+    const barCol = progress>=100?'var(--green)':progress>=66?'var(--cyan)':progress>=33?'#FCD34D':'var(--red)';
+    const frist = okr.frist ? (okr.frist < today() && progress < 100 ? `<span style="color:var(--red)">⚠ Abgelaufen</span>` : `bis ${fmtDate(okr.frist)}`) : '';
+    return `<div class="card" style="margin-bottom:0">
+      <div class="card-body">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:.75rem">
+          <div>
+            <div style="font-weight:600;font-size:.9rem;margin-bottom:.2rem">${okr.titel}</div>
+            <div style="font-size:.75rem;color:var(--muted)">${okr.kategorie} · ${frist}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:.5rem">
+            <span style="font-size:1.3rem;font-weight:700;color:${barCol}">${progress}%</span>
+            <button class="btn-icon" onclick="delOKR(${okr.id})">🗑</button>
+          </div>
+        </div>
+        <div style="background:var(--dark3);border-radius:4px;height:8px;margin-bottom:.6rem;overflow:hidden">
+          <div style="height:8px;border-radius:4px;background:${barCol};width:${progress}%;transition:width .5s ease"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:.78rem;color:var(--muted);margin-bottom:.75rem">
+          <span>Aktuell: <strong style="color:var(--text)">${okr.einheit==='CHF'?fmt(okr.aktuell):okr.aktuell+' '+okr.einheit}</strong></span>
+          <span>Ziel: <strong style="color:var(--text)">${okr.einheit==='CHF'?fmt(okr.ziel):okr.ziel+' '+okr.einheit}</strong></span>
+        </div>
+        <div style="display:flex;gap:.5rem">
+          <input type="number" placeholder="Aktuellen Wert aktualisieren" style="flex:1;font-size:.8rem;padding:.4rem .7rem" onkeydown="if(event.key==='Enter')updateOKR(${okr.id},this.value)">
+          <button class="btn-ghost" onclick="updateOKR(${okr.id},this.previousElementSibling.value)" style="font-size:.75rem;padding:.35rem .75rem">↑ Update</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="display:flex;gap:.75rem;margin-bottom:1.25rem;align-items:center">
+      <button class="btn" onclick="openModal('modal-okr');fillOKRDefaults()">+ Neues Ziel</button>
+    </div>
+    <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:1.25rem">
+      <div class="stat-card"><div class="stat-label">AKTIVE ZIELE</div><div class="stat-val" style="font-size:1.4rem">${S.okrs.filter(o=>o.frist>=today()||!o.frist).length}</div></div>
+      <div class="stat-card"><div class="stat-label">ERREICHT</div><div class="stat-val" style="font-size:1.4rem;color:var(--green)">${S.okrs.filter(o=>parseFloat(o.aktuell||0)>=parseFloat(o.ziel||1)).length}</div></div>
+      <div class="stat-card"><div class="stat-label">MRR AKTUELL</div><div class="stat-val" style="font-size:1rem">${fmt(mrrPot)}</div></div>
+    </div>
+
+    ${!S.okrs.length?`<div class="empty-state"><div class="icon">🎯</div><p>Noch keine Ziele. Definiere dein erstes OKR!</p>
+    <div style="display:flex;flex-direction:column;gap:.5rem;max-width:300px;margin:1rem auto 0">
+      <button class="btn" onclick="quickAddOKR('MRR Ziel CHF 5\'000',5000,mrrPot,'CHF','Q2 2025')">+ MRR Ziel CHF 5\'000/Mo</button>
+      <button class="btn-ghost" onclick="quickAddOKR('10 Aktive Kunden',10,S.kunden.filter(k=>k.status===\'Aktiv\').length,'Kunden','Q3 2025')">+ 10 Aktive Kunden</button>
+      <button class="btn-ghost" onclick="quickAddOKR('3 Produkte Live',3,S.produkte.filter(p=>p.status===\'Live\').length,'Produkte','Q4 2025')">+ 3 Produkte Live</button>
+    </div></div>`:
+    `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1rem">${okrCards}</div>`}`;
+}
+
+window.fillOKRDefaults = () => {
+  document.getElementById('okr-datum').value = new Date(new Date().getFullYear(), 11, 31).toISOString().split('T')[0];
+};
+
+window.quickAddOKR = async (titel, ziel, aktuell, einheit, label) => {
+  const item = {id:S.nextId.okr++,titel,ziel,aktuell,einheit,kategorie:label,frist:new Date(new Date().getFullYear(),11,31).toISOString().split('T')[0],createdAt:today()};
+  S.okrs.push(item); await fsSave('okrs',item); renderOKRs(); toast('Ziel hinzugefügt!','success');
+};
+
+window.saveOKR = async () => {
+  const titel = document.getElementById('okr-titel').value.trim();
+  if (!titel) { toast('Titel eingeben','error'); return; }
+  const item = {id:S.nextId.okr++,titel,ziel:parseFloat(document.getElementById('okr-ziel').value)||0,aktuell:parseFloat(document.getElementById('okr-aktuell').value)||0,einheit:document.getElementById('okr-einheit').value,kategorie:document.getElementById('okr-kat').value,frist:document.getElementById('okr-datum').value,createdAt:today()};
+  S.okrs.push(item); await fsSave('okrs',item);
+  closeModal('modal-okr'); ['okr-titel','okr-ziel','okr-aktuell'].forEach(x=>document.getElementById(x).value='');
+  renderOKRs(); toast('Ziel gespeichert!','success');
+};
+
+window.updateOKR = async (id, val) => {
+  const okr = S.okrs.find(x=>x.id===id);
+  if (!okr || !val) return;
+  okr.aktuell = parseFloat(val);
+  await fsSave('okrs', okr);
+  renderOKRs();
+  if (okr.aktuell >= okr.ziel) toast('🎉 Ziel erreicht! Glückwunsch!','success');
+  else toast('Fortschritt aktualisiert','success');
+};
+window.delOKR = async (id) => { S.okrs=S.okrs.filter(o=>o.id!==id); await fsDelete('okrs',id); renderOKRs(); toast('Ziel gelöscht'); };
+
+
+// ══════════════════════════════════════════════════════════════════
+// KI FEATURE 1 — AUTO-AUFGABEN BEI NEUEM AUFTRAG
+// ══════════════════════════════════════════════════════════════════
+const TASK_GEN_SYS = `Du bist ein Projektmanager für ZeroGen, ein Schweizer AI-Software-Startup.
+Generiere für den gegebenen Auftrag eine priorisierte Aufgabenliste als JSON.
+Antworte NUR als JSON-Array (keine Backticks, kein Text):
+[{"titel":"Aufgabe 1","prio":"Hoch","tage":2},{"titel":"Aufgabe 2","prio":"Mittel","tage":3}]
+Prio: Hoch/Mittel/Niedrig. Tage = Tage ab heute für Fälligkeit.
+Erstelle 4-7 konkrete, umsetzbare Aufgaben passend zum Auftrag.`;
+
+async function autoGenTasks(auftrag) {
+  toast('⚙️ KI generiert Aufgaben...', '');
+  const prompt = `Auftrag: ${auftrag.titel}\nBeschreibung: ${auftrag.desc||'—'}\nBudget: CHF ${auftrag.budget||0}\nKunde: ${auftrag.kunde}`;
+  try {
+    const _reply2 = await callKI([{role:'user',parts:[{text:prompt}]}], TASK_GEN_SYS);
+    const tasks = JSON.parse(_reply2.replace(/```json|```/g,'').trim());
+    let count=0;
+    for(const t of tasks) {
+      const faellig = new Date(); faellig.setDate(faellig.getDate()+(t.tage||3));
+      const item={id:S.nextId.task++,titel:t.titel,auftragId:auftrag.id,prio:t.prio||'Mittel',status:'Offen',faellig:faellig.toISOString().split('T')[0],notiz:'',createdAt:today()};
+      S.tasks.push(item); await fsSave('tasks',item); count++;
+    }
+    toast(`✓ ${count} Aufgaben automatisch erstellt!`, 'success');
+  } catch(e) { /* silent fail */ }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// KI FEATURE 2 — ANGEBOTS-TEXTE PER KI
+// ══════════════════════════════════════════════════════════════════
+const ANGEBOT_TEXT_SYS = `Du bist ein Verkaufsexperte für ZeroGen, ein Schweizer AI-Software-Startup.
+Generiere professionelle Angebotspositionen und einen Einleitungstext auf Deutsch.
+Antworte NUR als JSON (keine Backticks):
+{"einleitung":"Professioneller 2-3 Satz Einleitungstext für das Angebot","positionen":[{"desc":"Leistungsbeschreibung","menge":1,"preis":1500},{"desc":"Weitere Leistung","menge":1,"preis":500}]}
+Preise in CHF, realistisch für den Schweizer IT-Markt. 3-5 Positionen.`;
+
+window.kiAngebotText = async () => {
+  const input = document.getElementById('ang-ki-input').value.trim();
+  if(!input){toast('Beschreibung eingeben','error');return;}
+  const btn = document.getElementById('ang-ki-btn');
+  btn.innerHTML='⏳'; btn.disabled=true;
+  try {
+    const _reply3 = await callKI([{role:'user',parts:[{text:`Erstelle Angebotstext für: ${input}`}]}], ANGEBOT_TEXT_SYS);
+    btn.innerHTML='✦ KI generieren'; btn.disabled=false;
+    const data = JSON.parse(_reply3.replace(/```json|```/g,'').trim());
+    // Fill in positions
+    document.getElementById('ang-positionen').innerHTML='';
+    for(const p of data.positionen||[]) {
+      window.addAngPosition();
+      const rows = document.querySelectorAll('.ang-pos-row');
+      const last = rows[rows.length-1];
+      const inp = last.querySelectorAll('input');
+      inp[0].value=p.desc; inp[1].value=p.menge||1; inp[2].value=p.preis||0;
+    }
+    if(data.einleitung) document.getElementById('ang-bemerkung').value=data.einleitung;
+    window.calcAngTotal();
+    toast('✓ KI hat '+( data.positionen?.length||0)+' Positionen generiert!','success');
+  } catch(e){btn.innerHTML='✦ KI generieren';btn.disabled=false;toast('Fehler: '+e.message,'error');}
+};
+
+// ══════════════════════════════════════════════════════════════════
+// KI FEATURE 3 — PREISVORSCHLAG FÜR AUFTRÄGE
+// ══════════════════════════════════════════════════════════════════
+const PREIS_SYS = `Du bist ein erfahrener IT-Berater in der Schweiz mit Kenntnissen über Marktpreise für Software-Entwicklung.
+Analysiere den Auftrag und gib eine Preisschätzung als JSON (keine Backticks):
+{"min":3500,"max":7500,"empfohlen":5500,"stunden":40,"tagessatz":550,"begruendung":"Kurze Begründung 1-2 Sätze","risiken":["Risiko 1"],"inbegriffen":["Was inbegriffen ist"]}
+Preise in CHF. Realistisch für Schweizer KMU-Markt.`;
+
+window.kiPreisvorschlag = async () => {
+  const titel = document.getElementById('a-titel').value.trim();
+  const desc = document.getElementById('a-desc').value.trim();
+  if(!titel){toast('Zuerst Titel und Beschreibung eingeben','error');return;}
+  const btn = document.getElementById('preis-ki-btn');
+  btn.innerHTML='⏳'; btn.disabled=true;
+  try {
+    const _reply4 = await callKI([{role:'user',parts:[{text:`Auftrag: ${titel}\n${desc}`}]}], PREIS_SYS);
+    btn.innerHTML='💰 Preis schätzen'; btn.disabled=false;
+    const p = JSON.parse(_reply4.replace(/```json|```/g,'').trim());
+    document.getElementById('a-budget').value = p.empfohlen||0;
+    // Show price suggestion tooltip
+    const el = document.getElementById('preis-result');
+    el.style.display='block';
+    el.innerHTML=`<div style="background:rgba(0,200,232,.08);border:1px solid rgba(0,200,232,.2);border-radius:8px;padding:.85rem 1rem;margin-top:.5rem;font-size:.82rem">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.5rem;margin-bottom:.65rem;text-align:center">
+        <div><div style="color:var(--muted);font-size:.68rem;font-family:'Space Mono',monospace">MIN</div><div style="font-weight:700;color:#FCD34D">CHF ${(p.min||0).toLocaleString()}</div></div>
+        <div><div style="color:var(--muted);font-size:.68rem;font-family:'Space Mono',monospace">EMPFOHLEN</div><div style="font-weight:700;color:var(--green);font-size:1rem">CHF ${(p.empfohlen||0).toLocaleString()}</div></div>
+        <div><div style="color:var(--muted);font-size:.68rem;font-family:'Space Mono',monospace">MAX</div><div style="font-weight:700;color:#FCD34D">CHF ${(p.max||0).toLocaleString()}</div></div>
+      </div>
+      <div style="color:var(--muted);margin-bottom:.4rem">~${p.stunden||0}h · CHF ${p.tagessatz||0}/Tag</div>
+      <div style="color:var(--text);line-height:1.5">${p.begruendung||''}</div>
+    </div>`;
+    toast('✓ Empfohlener Preis ins Budget eingetragen!','success');
+  } catch(e){btn.innerHTML='💰 Preis schätzen';btn.disabled=false;toast('Fehler','error');}
+};
+
+// ══════════════════════════════════════════════════════════════════
+// KI FEATURE 4 — MONATS-BRIEFING
+// ══════════════════════════════════════════════════════════════════
+window.genMonatsBriefing = async () => {
+  const btn = document.getElementById('briefing-btn');
+  btn.innerHTML='⏳ Analysiere...'; btn.disabled=true;
+  const m = today().slice(0,7);
+  const einM = S.einnahmen.filter(e=>e.datum&&e.datum.startsWith(m));
+  const ausM = S.ausgaben.filter(a=>a.datum&&a.datum.startsWith(m));
+  const aufAbg = S.auftraege.filter(a=>a.status==='Abgeschlossen');
+  const tasksErl = S.tasks.filter(t=>t.status==='Erledigt');
+  const angAngen = S.angebote.filter(a=>a.status==='Angenommen');
+  const okrsDone = S.okrs.filter(o=>parseFloat(o.aktuell||0)>=parseFloat(o.ziel||1));
+  const context = `Monat: ${m}
+Einnahmen diesen Monat: CHF ${einM.reduce((s,e)=>s+parseFloat(e.betrag||0),0).toFixed(2)} (${einM.length} Transaktionen)
+Ausgaben diesen Monat: CHF ${ausM.reduce((s,a)=>s+parseFloat(a.betrag||0),0).toFixed(2)} (${ausM.length} Positionen)
+Abgeschlossene Aufträge total: ${aufAbg.length}
+Erledigte Aufgaben: ${tasksErl.length}
+Angenommene Angebote: ${angAngen.length} (Wert: CHF ${angAngen.reduce((s,a)=>s+parseFloat(a.total||0),0).toFixed(2)})
+Aktive Kunden: ${S.kunden.filter(k=>k.status==='Aktiv').length}
+Produkte live: ${S.produkte.filter(p=>p.status==='Live').length}
+Erreichte Ziele: ${okrsDone.length}/${S.okrs.length}
+Offene Aufgaben: ${S.tasks.filter(t=>t.status!=='Erledigt').length}`;
+
+  const SYS = `Du bist ein Business-Coach für ZeroGen, ein junges Schweizer AI-Startup aus Kloten.
+Erstelle ein ehrliches, motivierendes Monats-Briefing auf Deutsch. Struktur:
+1. 📊 ZUSAMMENFASSUNG (2-3 Sätze, wichtigste Zahlen)
+2. ✅ WAS GUT LIEF (2-3 Punkte)
+3. ⚠️ WAS VERBESSERT WERDEN KANN (2-3 Punkte, konstruktiv)
+4. 🎯 FOKUS FÜR NÄCHSTEN MONAT (3 konkrete Empfehlungen)
+5. 💡 MOTIVATIONS-ABSCHLUSS (1 Satz)
+Sei konkret, nutze die echten Zahlen. Kein Bullshit, echter Mehrwert.`;
+
+  try {
+    const _reply5 = await callKI([{role:'user',parts:[{text:context}]}], SYS);
+    btn.innerHTML='📊 Monats-Briefing'; btn.disabled=false;
+    showBriefingModal(_reply5, m);
+  } catch(e){btn.innerHTML='📊 Monats-Briefing';btn.disabled=false;toast('Fehler','error');}
+};
+
+function showBriefingModal(text, monat) {
+  document.getElementById('briefing-monat').textContent = monat;
+  document.getElementById('briefing-text').innerHTML = text.replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');
+  document.getElementById('modal-briefing').classList.add('open');
+}
+
+window.copyBriefing = () => {
+  navigator.clipboard.writeText(document.getElementById('briefing-text').innerText).then(()=>toast('Briefing kopiert!','success'));
+};
+
+// ══════════════════════════════════════════════════════════════════
+// KI FEATURE 5 — E-MAIL ASSISTENT
+// ══════════════════════════════════════════════════════════════════
+window.openEmailAssistent = (typ, refId) => {
+  document.getElementById('email-typ').value = typ;
+  document.getElementById('email-ref-id').value = refId || '';
+  // Pre-fill subject
+  let betreff = '', kontext = '';
+  if(typ==='angebot') {
+    const a = S.angebote.find(x=>x.id===refId);
+    const k = a ? S.kunden.find(x=>x.id==a.kundeId) : null;
+    betreff = a ? `Angebot ${a.nr} — ZeroGen` : 'Angebot';
+    kontext = a ? `Angebot Nr. ${a.nr}, Betrag CHF ${a.total}, Kunde: ${k?.name||a.kundenName||'—'}` : '';
+  } else if(typ==='rechnung') {
+    const r = S.rechnungen.find(x=>x.id===refId);
+    const k = r ? S.kunden.find(x=>x.id==r.kundeId) : null;
+    betreff = r ? `Rechnung ${r.nr} — ZeroGen` : 'Rechnung';
+    kontext = r ? `Rechnung Nr. ${r.nr}, Betrag CHF ${r.total}, fällig: ${r.faellig}` : '';
+  } else if(typ==='followup') {
+    betreff = 'Nachfassung — ZeroGen';
+  }
+  document.getElementById('email-betreff').value = betreff;
+  document.getElementById('email-kontext').value = kontext;
+  document.getElementById('email-ton').value = 'professionell';
+  document.getElementById('email-output').value = '';
+  document.getElementById('modal-email').classList.add('open');
+};
+
+window.kiEmailGen = async () => {
+  const typ = document.getElementById('email-typ').value;
+  const kontext = document.getElementById('email-kontext').value;
+  const ton = document.getElementById('email-ton').value;
+  const empfaenger = document.getElementById('email-empfaenger').value;
+  const btn = document.getElementById('email-gen-btn');
+  btn.innerHTML='⏳'; btn.disabled=true;
+
+  const EMAIL_SYS = `Du bist ein professioneller Texter für ZeroGen, ein Schweizer AI-Software-Startup aus Kloten.
+Schreibe eine E-Mail auf Deutsch. Ton: ${ton}. 
+Formatiere als: Betreff: [Betreff]\n\n[E-Mail Text]
+Keine Platzhalter, echter Text. Unterschrift: "Freundliche Grüsse\nZeroGen\nKloten, Schweiz"`;
+
+  const prompt = `Typ: ${typ}\nEmpfänger: ${empfaenger||'Kunde'}\nKontext: ${kontext}`;
+  try {
+    const _reply6 = await callKI([{role:'user',parts:[{text:prompt}]}], EMAIL_SYS);
+    btn.innerHTML='✦ Generieren'; btn.disabled=false;
+    document.getElementById('email-output').value = _reply6;
+    toast('✓ E-Mail generiert!','success');
+  } catch(e){btn.innerHTML='✦ Generieren';btn.disabled=false;}
+};
+
+window.copyEmail = () => {
+  navigator.clipboard.writeText(document.getElementById('email-output').value).then(()=>toast('E-Mail kopiert!','success'));
+};
+
+window.openMailClient = () => {
+  const text = document.getElementById('email-output').value;
+  const betreff = document.getElementById('email-betreff').value;
+  const empf = document.getElementById('email-empfaenger').value;
+  const body = encodeURIComponent(text);
+  window.open(`mailto:${empf}?subject=${encodeURIComponent(betreff)}&body=${body}`);
+};
+
+// ══════════════════════════════════════════════════════════════════
+// KI FEATURE 6 — KUNDENANALYSE & UPSELL
+// ══════════════════════════════════════════════════════════════════
+window.kiKundenAnalyse = async (kundeId) => {
+  const k = S.kunden.find(x=>x.id===kundeId);
+  if(!k) return;
+  const btn = document.getElementById('analyse-btn-'+kundeId);
+  if(btn){btn.innerHTML='⏳';btn.disabled=true;}
+  const umsatz = S.einnahmen.filter(e=>e.kundeId==kundeId).reduce((s,e)=>s+parseFloat(e.betrag||0),0);
+  const auftraege = S.auftraege.filter(a=>a.kundeId==kundeId||a.kunde===k.name||a.kunde===k.firma);
+  const ANALYSE_SYS = `Du bist ein Business-Entwickler für ZeroGen, ein Schweizer AI-Startup.
+Analysiere den Kunden und gib konkrete Upsell/Cross-Sell Empfehlungen.
+Antworte NUR als JSON (keine Backticks):
+{"potenzial":"hoch/mittel/niedrig","upsell":["Konkrete Empfehlung 1","Empfehlung 2","Empfehlung 3"],"naechster_schritt":"Was sollte ZeroGen als nächstes tun","lifetime_value":"Geschätzter Jahresumsatz in CHF als Zahl"}`;
+  const context = `Kunde: ${k.name}, Firma: ${k.firma||'—'}, Branche/Produkt: ${k.produkt||'—'}, Status: ${k.status}, Ort: ${k.ort||'—'}\nBisheriger Umsatz: CHF ${umsatz}\nAufträge: ${auftraege.length}, Notizen: ${k.notizen||'—'}`;
+  try {
+    const _reply7 = await callKI([{role:'user',parts:[{text:context}]}], ANALYSE_SYS);
+    if(btn){btn.innerHTML='🔍 Analyse';btn.disabled=false;}
+    const a = JSON.parse(_reply7.replace(/```json|```/g,'').trim());
+    showKundenAnalyseModal(k, a);
+  } catch(e){if(btn){btn.innerHTML='🔍 Analyse';btn.disabled=false;}}
+};
+
+function showKundenAnalyseModal(kunde, analyse) {
+  const potCol = analyse.potenzial==='hoch'?'var(--green)':analyse.potenzial==='mittel'?'#FCD34D':'var(--muted)';
+  document.getElementById('analyse-content').innerHTML = `
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem;padding:.9rem 1.1rem;background:var(--dark3);border-radius:10px">
+      <div style="width:44px;height:44px;border-radius:50%;background:var(--grad);display:flex;align-items:center;justify-content:center;font-size:1.2rem;font-weight:700;color:#fff;flex-shrink:0">${kunde.name[0].toUpperCase()}</div>
+      <div><div style="font-weight:600;font-size:.95rem">${kunde.name}</div><div style="font-size:.78rem;color:var(--muted)">${kunde.firma||''}</div></div>
+      <div style="margin-left:auto;text-align:right">
+        <div style="font-size:.68rem;color:var(--muted);font-family:'Space Mono',monospace">POTENZIAL</div>
+        <div style="font-weight:700;color:${potCol};text-transform:uppercase">${analyse.potenzial||'—'}</div>
+      </div>
+    </div>
+    <div style="background:rgba(74,222,128,.06);border:1px solid rgba(74,222,128,.2);border-radius:8px;padding:.9rem 1rem;margin-bottom:1rem">
+      <div style="font-family:'Space Mono',monospace;font-size:.62rem;color:var(--green);margin-bottom:.5rem">UPSELL EMPFEHLUNGEN</div>
+      ${(analyse.upsell||[]).map((u,i)=>`<div style="display:flex;gap:.6rem;margin-bottom:.4rem;font-size:.84rem"><span style="color:var(--cyan);font-weight:700">${i+1}.</span><span>${u}</span></div>`).join('')}
+    </div>
+    <div style="background:rgba(0,200,232,.06);border:1px solid rgba(0,200,232,.2);border-radius:8px;padding:.9rem 1rem;margin-bottom:1rem">
+      <div style="font-family:'Space Mono',monospace;font-size:.62rem;color:var(--cyan);margin-bottom:.4rem">NÄCHSTER SCHRITT</div>
+      <div style="font-size:.85rem;line-height:1.5">${analyse.naechster_schritt||'—'}</div>
+    </div>
+    <div style="display:flex;gap:.75rem">
+      <button class="btn-ghost" style="flex:1;font-size:.8rem" onclick="openEmailAssistent('followup',null);closeModal('modal-analyse')">✉ Follow-up E-Mail</button>
+      <button class="btn" style="flex:1;font-size:.8rem" onclick="openModal('modal-auftrag');document.getElementById('a-kunde').value='${kunde.firma||kunde.name}';closeModal('modal-analyse')">+ Auftrag erstellen</button>
+    </div>`;
+  document.getElementById('analyse-titel').textContent = `Analyse: ${kunde.name}`;
+  document.getElementById('modal-analyse').classList.add('open');
+}
+
+
+// ─── KI PROVIDER MANAGEMENT ────────────────────────────────────────
+async function callGemini(messages, systemPrompt, retries = 3) {
+  const key = getGeminiKey();
+  if (!key) { 
+    window.showApiKeyModal(); 
+    throw new Error('Bitte API-Key eingeben'); 
+  }
+  
+  const body = {
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: messages.map(m => ({ role: m.role === 'model' ? 'model' : 'user', parts: m.parts })),
+    generationConfig: { maxOutputTokens: 2048, temperature: 0.7, topP: 0.95 }
+  };
+  
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp-01-21:generateContent?key=${key}`,
+        { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) }
+      );
+      
+      if (!res.ok) {
+        const err = await res.json().catch(()=>({}));
+        const msg = err?.error?.message || `HTTP ${res.status}`;
+        
+        if (res.status===400) throw new Error('Ungültiger API-Key oder Modell nicht verfügbar — bitte prüfen');
+        if (res.status===401) throw new Error('Authentifizierung fehlgeschlagen — API-Key ungültig');
+        if (res.status===429) {
+          if (attempt < retries - 1) {
+            const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+            await new Promise(r => setTimeout(r, waitTime));
+            continue;
+          }
+          throw new Error('Rate Limit überschritten — bitte in 1-2 Minuten erneut versuchen');
+        }
+        throw new Error(msg);
+      }
+      
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || 'Keine Antwort.';
+    } catch (e) {
+      if (attempt === retries - 1) throw e;
+      if (e.message.includes('Rate Limit')) {
+        const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+        await new Promise(r => setTimeout(r, waitTime));
+      } else {
+        throw e;
+      }
+    }
+  }
+}
+
+// ─── GROQ API ────────────────────────────────────────
+async function callGroq(messages, systemPrompt, retries = 3) {
+  const key = getGroqKey();
+  if (!key) { 
+    window.showApiKeyModal(); 
+    throw new Error('Bitte Groq API-Key eingeben'); 
+  }
+  
+  const body = {
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      { role: 'system', content: systemPrompt },
+      ...messages.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.parts[0]?.text || '' }))
+    ],
+    max_tokens: 2048,
+    temperature: 0.7,
+    top_p: 0.95
+  };
+  
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${key}`
+        },
+        body: JSON.stringify(body)
+      });
+      
+      if (!res.ok) {
+        const err = await res.json().catch(()=>({}));
+        const msg = err?.error?.message || `HTTP ${res.status}`;
+        
+        if (res.status===401) throw new Error('Ungültiger Groq API-Key — bitte prüfen');
+        if (res.status===429) {
+          if (attempt < retries - 1) {
+            const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+            await new Promise(r => setTimeout(r, waitTime));
+            continue;
+          }
+          throw new Error('Rate Limit überschritten — bitte in 1-2 Minuten erneut versuchen');
+        }
+        throw new Error(msg);
+      }
+      
+      const data = await res.json();
+      return data.choices?.[0]?.message?.content || 'Keine Antwort.';
+    } catch (e) {
+      if (attempt === retries - 1) throw e;
+      if (e.message.includes('Rate Limit')) {
+        const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+        await new Promise(r => setTimeout(r, waitTime));
+      } else {
+        throw e;
+      }
+    }
+  }
+}
+
+// ─── UNIFIED KI CALL ────────────────────────────────────────
+async function callKI(messages, systemPrompt) {
+  const provider = getKiProvider();
+  if (provider === 'groq') {
+    return await callGroq(messages, systemPrompt);
+  } else {
+    return await callGemini(messages, systemPrompt);
+  }
+}
+
+// Erweiterte saveApiKey Funktion
+window.saveApiKey = async () => {
+  const provider = document.getElementById('ki-provider-select').value;
+  const key = document.getElementById('apikey-input').value.trim();
+  
+  if (provider === 'groq') {
+    if (!key) { toast('Bitte Groq API-Key eingeben', 'error'); return; }
+    localStorage.setItem('zerogen_groq_key', key);
+  } else {
+    if (!key.startsWith('AIza')) { toast('Ungültiger Key — muss mit AIza... beginnen', 'error'); return; }
+    localStorage.setItem('zerogen_gemini_key', key);
+  }
+  
+  localStorage.setItem('zerogen_ki_provider', provider);
+  
+  // Zusätzlich in Firebase speichern
+  const geminiKey = provider === 'gemini' ? key : localStorage.getItem('zerogen_gemini_key');
+  const groqKey = provider === 'groq' ? key : localStorage.getItem('zerogen_groq_key');
+  
+  const saved = await saveApiKeysToFirebase(geminiKey, groqKey, provider);
+  
+  if (saved) {
+    toast('✓ API-Key gespeichert und in Firebase gesichert!', 'success');
+  } else {
+    toast('✓ Lokal gespeichert (Firebase-Fehler)', 'warning');
+  }
+  
+  updateKiStatus();
+  setTimeout(() => closeModal('modal-apikey'), 500);
+};
+
+// Erweiterte clearApiKey Funktion
+window.clearApiKey = async () => {
+  const provider = getKiProvider();
+  if (provider === 'groq') {
+    localStorage.removeItem('zerogen_groq_key');
+  } else {
+    localStorage.removeItem('zerogen_gemini_key');
+  }
+  
+  // Auch aus Firebase löschen
+  if (currentUser) {
+    try {
+      await deleteDoc(doc(db, 'users', currentUser.uid, 'apikeys', 'current'));
+      toast('API-Key aus Firebase gelöscht', 'success');
+    } catch (e) {
+      console.error('Fehler beim Löschen aus Firebase:', e);
+    }
+  }
+  
+  updateKiStatus();
+  toast('API-Key gelöscht', '');
+};
+
+// Funktion zum manuellen Syncen der Keys
+window.syncApiKeys = async () => {
+  if (!currentUser) {
+    toast('Bitte zuerst einloggen', 'error');
+    return;
+  }
+  
+  const geminiKey = localStorage.getItem('zerogen_gemini_key');
+  const groqKey = localStorage.getItem('zerogen_groq_key');
+  const provider = localStorage.getItem('zerogen_ki_provider') || 'gemini';
+  
+  if (!geminiKey && !groqKey) {
+    toast('Keine API-Keys zum Syncen gefunden', 'error');
+    return;
+  }
+  
+  await saveApiKeysToFirebase(geminiKey, groqKey, provider);
+  toast('API-Keys mit Firebase synchronisiert!', 'success');
+};
+
+window.showApiKeyModal = function() {
+  const provider = getKiProvider();
+  const geminiKey = getGeminiKey();
+  const groqKey = getGroqKey();
+  
+  document.getElementById('ki-provider-select').value = provider;
+  document.getElementById('apikey-input').value = provider === 'groq' ? groqKey : geminiKey;
+  updateProviderLabel();
+  document.getElementById('modal-apikey').classList.add('open');
+};
+
+window.updateProviderLabel = function() {
+  const provider = document.getElementById('ki-provider-select').value;
+  const label = document.getElementById('apikey-label');
+  const hint = document.getElementById('apikey-hint');
+  const input = document.getElementById('apikey-input');
+  
+  if (provider === 'groq') {
+    label.textContent = 'GROQ API KEY';
+    hint.innerHTML = '<strong style="color:var(--cyan)">So holst du deinen kostenlosen Key:</strong><br>1. Gehe zu <a href="https://console.groq.com" target="_blank" style="color:var(--cyan)">console.groq.com</a><br>2. Registriere dich kostenlos<br>3. Gehe zu "API Keys" und kopiere deinen Key<br><strong style="color:#FFB84D">Hinweis:</strong> Groq ist kostenlos, keine Kreditkarte nötig!';
+    input.placeholder = 'gsk_...';
+    input.value = getGroqKey();
+  } else {
+    label.textContent = 'GEMINI API KEY';
+    hint.innerHTML = '<strong style="color:var(--cyan)">So holst du deinen kostenlosen Key:</strong><br>1. Gehe zu <a href="https://aistudio.google.com" target="_blank" style="color:var(--cyan)">aistudio.google.com</a><br>2. Klick <strong>Get API key</strong> → <strong>Create API key</strong><br>3. Key kopieren und hier einfügen';
+    input.placeholder = 'AIzaSy...';
+    input.value = getGeminiKey();
+  }
+};
+
+function updateKiStatus() {
+  const provider = getKiProvider();
+  const hasKey = provider === 'groq' ? !!getGroqKey() : !!getGeminiKey();
+  const dot = document.getElementById('ki-status-dot');
+  const txt = document.getElementById('ki-status-text');
+  const sub = document.getElementById('ki-status-sub');
+  const providerName = provider === 'groq' ? 'Groq (Llama 3.3)' : 'Gemini 1.5 Flash';
+  if (dot) dot.style.color = hasKey ? 'var(--green)' : 'var(--red)';
+  if (txt) txt.textContent = hasKey ? providerName : 'Kein API-Key';
+  if (sub) sub.style.cursor = 'pointer';
+  if (sub) sub.textContent = hasKey ? provider + ' · Key gespeichert' : '→ Klick zum Einrichten';
+}
+
+// ─── INIT ─────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded',()=>{
+  document.getElementById('auth-pw').addEventListener('keydown',e=>{if(e.key==='Enter')window.doLogin();});
+  document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('open');}));
+});
+</script>

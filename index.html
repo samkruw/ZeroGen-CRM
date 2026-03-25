@@ -21,12 +21,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, getDocs, deleteDoc } fro
 // ║  Firebase Console → Projekt → Web App hinzufügen║
 // ╚══════════════════════════════════════════════════╝
 const firebaseConfig = {
-  apiKey: "AIzaSyBEmDDTtv7rUKZ__yxMXfZt-tO8Z217wrw",
-  authDomain: "zerogen-crm.firebaseapp.com",
-  projectId: "zerogen-crm",
-  storageBucket: "zerogen-crm.firebasestorage.app",
-  messagingSenderId: "462477409182",
-  appId: "1:462477409182:web:43f9b3a07c02c89674b48f"
+  apiKey:            "%%FIREBASE_API_KEY%%",
+  authDomain:        "%%FIREBASE_AUTH_DOMAIN%%",
+  projectId:         "%%FIREBASE_PROJECT_ID%%",
+  storageBucket:     "%%FIREBASE_STORAGE_BUCKET%%",
+  messagingSenderId: "%%FIREBASE_MESSAGING_SENDER_ID%%",
+  appId:             "%%FIREBASE_APP_ID%%"
 };
 
 const app  = initializeApp(firebaseConfig);
@@ -1705,64 +1705,60 @@ function showKundenAnalyseModal(kunde, analyse) {
 }
 
 
-// ─── GEMINI DIREKT (kein Server nötig) ────────────────────────────────────────
-function getGeminiKey() {
-  return localStorage.getItem('zerogen_gemini_key') || '';
+// ─── GROQ DIREKT (kostenlos, kein Server nötig) ───────────────────────────────
+function getGroqKey() {
+  return localStorage.getItem('zerogen_groq_key') || '';
 }
 
 async function callGemini(messages, systemPrompt) {
-  const key = getGeminiKey();
+  const key = getGroqKey();
   if (!key) { showApiKeyModal(); throw new Error('Kein API-Key'); }
-  const body = {
-    system_instruction: { parts: [{ text: systemPrompt }] },
-    contents: messages.map(m => ({ role: m.role === 'model' ? 'model' : 'user', parts: m.parts })),
-    generationConfig: { maxOutputTokens: 2048, temperature: 0.85 }
-  };
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
-    { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) }
-  );
+  // Convert Gemini message format to OpenAI format (Groq uses OpenAI-compatible API)
+  const msgs = [
+    { role: 'system', content: systemPrompt },
+    ...messages.map(m => ({
+      role: m.role === 'model' ? 'assistant' : 'user',
+      content: m.parts?.[0]?.text || m.content || ''
+    }))
+  ];
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: msgs,
+      max_tokens: 2048,
+      temperature: 0.85
+    })
+  });
   if (!res.ok) {
     const err = await res.json().catch(()=>({}));
     const msg = err?.error?.message || `HTTP ${res.status}`;
-    if (res.status===400) throw new Error('Ungültiger API-Key — bitte prüfen');
-    if (res.status===429) throw new Error('Rate Limit — kurz warten und nochmals versuchen');
+    if (res.status === 401) throw new Error('Ungültiger Groq API-Key — bitte prüfen');
+    if (res.status === 429) throw new Error('Rate Limit — kurz warten und nochmals versuchen');
     throw new Error(msg);
   }
   const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || 'Keine Antwort.';
+  return data.choices?.[0]?.message?.content || 'Keine Antwort.';
 }
 
 function showApiKeyModal() {
-  const stored = getGeminiKey();
-  if (stored) document.getElementById('apikey-input').value = stored;
   document.getElementById('modal-apikey').classList.add('open');
 }
 
-window.saveApiKey = () => {
-  const key = document.getElementById('apikey-input').value.trim();
-  if (!key.startsWith('AIza')) { toast('Ungültiger Key — muss mit AIza... beginnen', 'error'); return; }
-  localStorage.setItem('zerogen_gemini_key', key);
-  closeModal('modal-apikey');
-  updateKiStatus();
-  toast('✓ API-Key gespeichert! KI-Features aktiv.', 'success');
-};
-
-window.clearApiKey = () => {
-  localStorage.removeItem('zerogen_gemini_key');
-  updateKiStatus();
-  toast('API-Key gelöscht', '');
-};
+window.saveApiKey = () => { closeModal('modal-apikey'); };
+window.clearApiKey = () => { toast('Key wird über GitHub Secrets verwaltet', ''); };
 
 function updateKiStatus() {
-  const hasKey = !!getGeminiKey();
+  const key = getGroqKey();
+  const configured = key && key !== '%%GROQ_API_KEY%%';
   const dot = document.getElementById('ki-status-dot');
   const txt = document.getElementById('ki-status-text');
   const sub = document.getElementById('ki-status-sub');
-  if (dot) dot.style.color = hasKey ? 'var(--green)' : 'var(--red)';
-  if (txt) txt.textContent = hasKey ? 'Gemini 2.0 Flash' : 'Kein API-Key';
-  if (sub) sub.style.cursor = 'pointer';
-  if (sub) sub.textContent = hasKey ? 'Direkt · Key gespeichert' : '→ Klick zum Einrichten';
+  if (dot) dot.style.color = configured ? 'var(--green)' : 'var(--red)';
+  if (txt) txt.textContent = configured ? 'Groq · Llama 3.3 70B' : 'Kein API-Key';
+  if (sub) sub.style.cursor = 'default';
+  if (sub) sub.textContent = configured ? 'Kostenlos · GitHub Secret' : 'Key nicht konfiguriert';
 }
 
 // ─── INIT ─────────────────────────────────────────────
@@ -2430,32 +2426,24 @@ select option{background:var(--dark3)}
   <div class="modal" style="max-width:500px">
     <div class="modal-header" style="background:linear-gradient(135deg,rgba(124,58,237,.15),rgba(0,200,232,.1))">
       <div>
-        <h3 style="background:linear-gradient(135deg,#A78BFA,#00C8E8);-webkit-background-clip:text;-webkit-text-fill-color:transparent">✦ Gemini API-Key einrichten</h3>
-        <div style="font-size:.75rem;color:var(--muted);margin-top:.2rem">Einmalig — wird sicher im Browser gespeichert</div>
+        <h3 style="background:linear-gradient(135deg,#F97316,#EF4444);-webkit-background-clip:text;-webkit-text-fill-color:transparent">✦ Groq API-Key einrichten</h3>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.2rem">Kostenlos · Schnell · Wird sicher im Browser gespeichert</div>
       </div>
       <button class="btn-icon" onclick="closeModal('modal-apikey')">✕</button>
     </div>
     <div class="modal-body">
       <div style="background:rgba(0,200,232,.06);border:1px solid rgba(0,200,232,.2);border-radius:8px;padding:.9rem 1rem;margin-bottom:1.25rem;font-size:.84rem;line-height:1.65">
-        <strong style="color:var(--cyan)">So holst du deinen kostenlosen Key:</strong><br>
-        1. Gehe zu <a href="https://aistudio.google.com" target="_blank" style="color:var(--cyan)">aistudio.google.com</a><br>
-        2. Klick <strong>Get API key</strong> → <strong>Create API key</strong><br>
-        3. Key kopieren und hier einfügen
+        <strong style="color:var(--cyan)">So holst du deinen kostenlosen Groq Key:</strong><br>
+        1. Gehe zu <a href="https://console.groq.com" target="_blank" style="color:var(--cyan)">console.groq.com</a><br>
+        2. Konto erstellen (kostenlos) → <strong>API Keys</strong> → <strong>Create API Key</strong><br>
+        3. Key kopieren und hier einfügen (beginnt mit <code>gsk_</code>)
       </div>
-      <div class="form-group">
-        <label>GEMINI API KEY</label>
-        <input id="apikey-input" type="password" placeholder="AIzaSy..." style="font-family:'Space Mono',monospace;font-size:.82rem;letter-spacing:.05em">
-      </div>
-      <div style="font-size:.76rem;color:var(--muted);margin-top:.6rem;line-height:1.6">
-        🔒 Der Key wird nur in deinem Browser gespeichert (localStorage). Er steht nicht im Code und wird nie übertragen.
+      <div style="font-size:.76rem;color:var(--muted);margin-top:.75rem;line-height:1.6">
+        🚀 Modell: <strong style="color:var(--text)">Llama 3.3 70B</strong> via Groq · Kostenlos · Kein Server nötig
       </div>
     </div>
-    <div class="modal-footer" style="justify-content:space-between">
-      <button class="btn-ghost" onclick="clearApiKey();closeModal('modal-apikey')" style="font-size:.78rem;color:var(--red);border-color:rgba(255,95,87,.3)">🗑 Key löschen</button>
-      <div style="display:flex;gap:.75rem">
-        <button class="btn-ghost" onclick="closeModal('modal-apikey')">Abbrechen</button>
-        <button class="btn" onclick="saveApiKey()" style="background:linear-gradient(135deg,#7C3AED,#1A6FD4)">✓ Speichern</button>
-      </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-apikey')">Schliessen</button>
     </div>
   </div>
 </div>

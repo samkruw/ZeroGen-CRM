@@ -49,6 +49,14 @@ let currentUser = null;
 let S = { ideen:[], auftraege:[], produkte:[], einnahmen:[], ausgaben:[], kunden:[], angebote:[], tasks:[], rechnungen:[], okrs:[], nextId:{idee:1,auftrag:1,produkt:1,ein:1,aus:1,kunde:1,angebot:1,task:1,rechnung:1,okr:1} };
 let deferredPwaPrompt = null;
 
+function isPWAInstalled() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
+function isAppleBrowser() {
+  return /iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent) && /Safari/.test(navigator.userAgent) && !/Chrome|CriOS|Edg|OPR|Firefox|FxiOS/.test(navigator.userAgent);
+}
+
 function initPWA() {
   if ('serviceWorker' in navigator && ['http:', 'https:'].includes(location.protocol)) {
     navigator.serviceWorker.register('./sw.js').catch(err => console.warn('Service Worker konnte nicht registriert werden:', err));
@@ -59,26 +67,63 @@ function initPWA() {
     deferredPwaPrompt = event;
     const btn = document.getElementById('pwa-install-btn');
     if (btn) btn.style.display = 'inline-flex';
+    if (currentUser) schedulePWAInstallPrompt();
   });
 
   window.addEventListener('appinstalled', () => {
     deferredPwaPrompt = null;
+    localStorage.setItem('zerogen_pwa_installed', '1');
     const btn = document.getElementById('pwa-install-btn');
     if (btn) btn.style.display = 'none';
+    closeModal('modal-pwa-install');
     toast('ZeroGen CRM wurde installiert.', 'success');
   });
 }
 
+function schedulePWAInstallPrompt() {
+  if (isPWAInstalled() || localStorage.getItem('zerogen_pwa_installed') === '1') return;
+  if (sessionStorage.getItem('zerogen_pwa_prompt_shown') === '1') return;
+  sessionStorage.setItem('zerogen_pwa_prompt_shown', '1');
+  setTimeout(showPWAInstallPrompt, 900);
+}
+
+function showPWAInstallPrompt() {
+  if (isPWAInstalled()) return;
+  const modal = document.getElementById('modal-pwa-install');
+  const text = document.getElementById('pwa-install-text');
+  const btn = document.getElementById('pwa-install-primary');
+  if (!modal || !text || !btn) return;
+
+  if (deferredPwaPrompt) {
+    text.textContent = 'Installiere ZeroGen CRM als App. Danach startet es wie ein normales Programm im eigenen Fenster.';
+    btn.textContent = 'Jetzt installieren';
+    btn.style.display = 'inline-flex';
+  } else if (isAppleBrowser()) {
+    text.textContent = 'Auf Safari: Teilen-Symbol öffnen und "Zum Home-Bildschirm" oder "Zum Dock hinzufügen" wählen.';
+    btn.style.display = 'none';
+  } else if (location.protocol === 'file:') {
+    text.textContent = 'Installation ist erst möglich, wenn die App über HTTPS oder localhost geöffnet wird. Für GitHub Pages ist alles vorbereitet.';
+    btn.style.display = 'none';
+  } else {
+    text.textContent = 'Der Browser zeigt die Installation an, sobald die PWA-Kriterien erfüllt sind. Nutze sonst das Installieren-Symbol in der Adressleiste.';
+    btn.style.display = deferredPwaPrompt ? 'inline-flex' : 'none';
+  }
+
+  modal.classList.add('open');
+}
+
 window.installPWA = async () => {
   if (!deferredPwaPrompt) {
-    toast('Installation erscheint erst über HTTPS oder localhost.', 'error');
+    showPWAInstallPrompt();
     return;
   }
   deferredPwaPrompt.prompt();
-  await deferredPwaPrompt.userChoice;
+  const choice = await deferredPwaPrompt.userChoice;
   deferredPwaPrompt = null;
   const btn = document.getElementById('pwa-install-btn');
   if (btn) btn.style.display = 'none';
+  closeModal('modal-pwa-install');
+  if (choice.outcome === 'accepted') localStorage.setItem('zerogen_pwa_installed', '1');
 };
 
 // ─── FIRESTORE ───────────────────────────────────────
@@ -148,6 +193,7 @@ onAuthStateChanged(auth, async (user) => {
     else renderDashboard();
     updateKiStatus();
     renderSidebarIdeas();
+    schedulePWAInstallPrompt();
   } else {
     currentUser = null;
     document.getElementById('auth-screen').style.display = 'flex';
@@ -3144,6 +3190,34 @@ tr:hover td{background:#F8FAFC}
 </div>
 
 <div id="toasts"></div>
+
+<!-- PWA INSTALL MODAL -->
+<div class="modal-overlay" id="modal-pwa-install">
+  <div class="modal" style="max-width:460px">
+    <div class="modal-header">
+      <div>
+        <h3>ZeroGen CRM installieren</h3>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.2rem">Als App auf Mac, Windows, Android oder iPhone nutzen</div>
+      </div>
+      <button class="btn-icon" onclick="closeModal('modal-pwa-install')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;gap:1rem;align-items:flex-start">
+        <div style="width:52px;height:52px;border-radius:14px;background:#101828;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <img src="./icons/zerogen-icon.svg" alt="" style="width:38px;height:38px">
+        </div>
+        <div>
+          <div style="font-weight:700;margin-bottom:.4rem">Schneller Zugriff ohne Browser-Tab</div>
+          <div id="pwa-install-text" style="font-size:.88rem;line-height:1.6;color:var(--muted)">Installiere ZeroGen CRM als App.</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closeModal('modal-pwa-install')">Später</button>
+      <button id="pwa-install-primary" class="btn" onclick="installPWA()">Jetzt installieren</button>
+    </div>
+  </div>
+</div>
 
 
 <!-- VIEW IDEE MODAL -->

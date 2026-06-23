@@ -1,0 +1,35 @@
+{
+  "name": "ZeroGen CRM",
+  "short_name": "ZeroGen",
+  "description": "ZeroGen CRM Workspace fuer Kunden, Produkte, Auftraege, Ideen und Finanzen.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "browser"],
+  "background_color": "#F4F6F8",
+  "theme_color": "#101828",
+  "orientation": "any",
+  "categories": ["business", "productivity", "finance"],
+  "icons": [
+    {
+      "src": "./icons/zerogen-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Ideen-Board",
+      "short_name": "Ideen",
+      "url": "./index.html#ideen",
+      "description": "ZeroGen App-Ideen verwalten"
+    },
+    {
+      "name": "Kunden",
+      "short_name": "Kunden",
+      "url": "./index.html#kunden",
+      "description": "Kunden im CRM oeffnen"
+    }
+  ]
+}

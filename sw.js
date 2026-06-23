@@ -1,9 +1,11 @@
-const CACHE_NAME = 'zerogen-crm-v1';
+const CACHE_NAME = 'zerogen-crm-v2';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './icons/zerogen-icon.svg'
+  './icons/zerogen-icon.svg',
+  './icons/zerogen-icon-192.png',
+  './icons/zerogen-icon-512.png'
 ];
 
 self.addEventListener('install', (event) => {

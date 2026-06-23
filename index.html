@@ -13,10 +13,28 @@
 <meta name="apple-mobile-web-app-title" content="ZeroGen CRM">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="./icons/zerogen-icon-192.png">
 <link rel="icon" type="image/svg+xml" href="./icons/zerogen-icon.svg">
-<link rel="apple-touch-icon" href="./icons/zerogen-icon.svg">
+<link rel="apple-touch-icon" href="./icons/zerogen-icon-192.png">
 <title>ZeroGen CRM</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script>
+window.__zerogenPwaPrompt = null;
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  window.__zerogenPwaPrompt = event;
+  const btn = document.getElementById('pwa-install-btn');
+  if (btn) btn.style.display = 'inline-flex';
+});
+
+if ('serviceWorker' in navigator && ['http:', 'https:'].includes(location.protocol)) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch((err) => {
+      console.warn('Service Worker konnte nicht registriert werden:', err);
+    });
+  });
+}
+</script>
 
 <!-- Firebase SDK (ESM) -->
 <script type="module">
@@ -47,7 +65,7 @@ await setPersistence(auth, browserSessionPersistence);
 // ─── STATE ───────────────────────────────────────────
 let currentUser = null;
 let S = { ideen:[], auftraege:[], produkte:[], einnahmen:[], ausgaben:[], kunden:[], angebote:[], tasks:[], rechnungen:[], okrs:[], nextId:{idee:1,auftrag:1,produkt:1,ein:1,aus:1,kunde:1,angebot:1,task:1,rechnung:1,okr:1} };
-let deferredPwaPrompt = null;
+let deferredPwaPrompt = window.__zerogenPwaPrompt || null;
 
 function isPWAInstalled() {
   return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
@@ -58,6 +76,12 @@ function isAppleBrowser() {
 }
 
 function initPWA() {
+  if (window.__zerogenPwaPrompt) {
+    deferredPwaPrompt = window.__zerogenPwaPrompt;
+    const btn = document.getElementById('pwa-install-btn');
+    if (btn && !isPWAInstalled()) btn.style.display = 'inline-flex';
+  }
+
   if ('serviceWorker' in navigator && ['http:', 'https:'].includes(location.protocol)) {
     navigator.serviceWorker.register('./sw.js').catch(err => console.warn('Service Worker konnte nicht registriert werden:', err));
   }
@@ -65,6 +89,7 @@ function initPWA() {
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
     deferredPwaPrompt = event;
+    window.__zerogenPwaPrompt = event;
     const btn = document.getElementById('pwa-install-btn');
     if (btn) btn.style.display = 'inline-flex';
     if (currentUser) schedulePWAInstallPrompt();
@@ -72,6 +97,7 @@ function initPWA() {
 
   window.addEventListener('appinstalled', () => {
     deferredPwaPrompt = null;
+    window.__zerogenPwaPrompt = null;
     localStorage.setItem('zerogen_pwa_installed', '1');
     const btn = document.getElementById('pwa-install-btn');
     if (btn) btn.style.display = 'none';
@@ -82,6 +108,8 @@ function initPWA() {
 
 function schedulePWAInstallPrompt() {
   if (isPWAInstalled() || localStorage.getItem('zerogen_pwa_installed') === '1') return;
+  const topbarBtn = document.getElementById('pwa-install-btn');
+  if (topbarBtn) topbarBtn.style.display = 'inline-flex';
   if (sessionStorage.getItem('zerogen_pwa_prompt_shown') === '1') return;
   sessionStorage.setItem('zerogen_pwa_prompt_shown', '1');
   setTimeout(showPWAInstallPrompt, 900);
@@ -97,16 +125,23 @@ function showPWAInstallPrompt() {
   if (deferredPwaPrompt) {
     text.textContent = 'Installiere ZeroGen CRM als App. Danach startet es wie ein normales Programm im eigenen Fenster.';
     btn.textContent = 'Jetzt installieren';
+    btn.onclick = window.installPWA;
     btn.style.display = 'inline-flex';
   } else if (isAppleBrowser()) {
     text.textContent = 'Auf Safari: Teilen-Symbol öffnen und "Zum Home-Bildschirm" oder "Zum Dock hinzufügen" wählen.';
-    btn.style.display = 'none';
+    btn.textContent = 'Verstanden';
+    btn.onclick = () => closeModal('modal-pwa-install');
+    btn.style.display = 'inline-flex';
   } else if (location.protocol === 'file:') {
-    text.textContent = 'Installation ist erst möglich, wenn die App über HTTPS oder localhost geöffnet wird. Für GitHub Pages ist alles vorbereitet.';
-    btn.style.display = 'none';
+    text.textContent = 'Du öffnest die Datei lokal über file://. So kann kein Browser eine PWA installieren. Öffne sie über GitHub Pages, HTTPS oder localhost.';
+    btn.textContent = 'Verstanden';
+    btn.onclick = () => closeModal('modal-pwa-install');
+    btn.style.display = 'inline-flex';
   } else {
-    text.textContent = 'Der Browser zeigt die Installation an, sobald die PWA-Kriterien erfüllt sind. Nutze sonst das Installieren-Symbol in der Adressleiste.';
-    btn.style.display = deferredPwaPrompt ? 'inline-flex' : 'none';
+    text.textContent = 'Der native Install-Dialog ist im Moment nicht verfügbar. Prüfe: HTTPS/localhost, Manifest, Service Worker und PNG-Icons. In Chrome/Edge kann auch das Installieren-Symbol in der Adressleiste erscheinen.';
+    btn.textContent = 'Erneut prüfen';
+    btn.onclick = window.installPWA;
+    btn.style.display = 'inline-flex';
   }
 
   modal.classList.add('open');
@@ -120,10 +155,16 @@ window.installPWA = async () => {
   deferredPwaPrompt.prompt();
   const choice = await deferredPwaPrompt.userChoice;
   deferredPwaPrompt = null;
+  window.__zerogenPwaPrompt = null;
   const btn = document.getElementById('pwa-install-btn');
-  if (btn) btn.style.display = 'none';
   closeModal('modal-pwa-install');
-  if (choice.outcome === 'accepted') localStorage.setItem('zerogen_pwa_installed', '1');
+  if (choice.outcome === 'accepted') {
+    localStorage.setItem('zerogen_pwa_installed', '1');
+    if (btn) btn.style.display = 'none';
+  } else {
+    if (btn) btn.style.display = 'inline-flex';
+    toast('Installation abgebrochen. Du kannst es später erneut versuchen.', '');
+  }
 };
 
 // ─── FIRESTORE ───────────────────────────────────────
